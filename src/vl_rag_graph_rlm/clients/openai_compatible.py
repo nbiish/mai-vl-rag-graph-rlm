@@ -25,7 +25,7 @@ class OpenAICompatibleClient(BaseLM):
         "openai": "https://api.openai.com/v1",
         "openrouter": "https://openrouter.ai/api/v1",
         "zenmux": "https://zenmux.ai/api/v1",
-        "zai": "https://open.bigmodel.cn/api/paas/v4",
+        "zai": "https://api.z.ai/api/coding/paas/v4",
     }
 
     # Recommended cheap SOTA models by provider
@@ -251,23 +251,118 @@ class ZenMuxClient(OpenAICompatibleClient):
 
 
 class ZaiClient(OpenAICompatibleClient):
-    """Convenience class for z.ai API (Zhipu AI).
+    """Client for z.ai API (Zhipu AI) with Coding Plan priority.
 
-    Recommended models:
+    z.ai offers two API endpoints:
+        1. Coding Plan (flat-rate $3-15/mo): https://api.z.ai/api/coding/paas/v4
+        2. Normal (pay-per-token):           https://open.bigmodel.cn/api/paas/v4
+
+    By default, the Coding Plan endpoint is tried first. If it fails (e.g.,
+    no active subscription), the client automatically falls back to the normal
+    endpoint. Set ZAI_CODING_PLAN=false to skip the Coding Plan endpoint.
+
+    Coding Plan models:
+        - glm-4.7: Flagship model, complex tasks (recommended)
+        - glm-4.5-air: Lightweight, faster responses
+
+    Normal API models:
         - glm-4.7: Flagship model, excellent reasoning
-        - glm-4.7-coding: Optimized for code generation
         - glm-4.7-flash: Fast, cost-effective
 
-    Note: z.ai also offers flat-rate Coding Plans ($3-15/mo) via their native API.
+    Docs: https://docs.z.ai/devpack/tool/others
     """
 
+    ZAI_CODING_PLAN_URL = "https://api.z.ai/api/coding/paas/v4"
+    ZAI_NORMAL_URL = "https://open.bigmodel.cn/api/paas/v4"
+
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        # Determine if Coding Plan should be tried first
+        self._use_coding_plan = os.getenv("ZAI_CODING_PLAN", "true").lower() in ("true", "1", "yes")
+        self._coding_plan_failed = False
+
+        # Start with Coding Plan URL if enabled, otherwise normal
+        base_url = self.ZAI_CODING_PLAN_URL if self._use_coding_plan else self.ZAI_NORMAL_URL
+
         super().__init__(
             api_key=api_key,
             model_name=model_name or "glm-4.7",
+            base_url=base_url,
             provider="zai",
             **kwargs,
         )
+
+        # Pre-create fallback client for normal endpoint (lazy — only used on failure)
+        self._fallback_client: openai.OpenAI | None = None
+        self._fallback_async_client: openai.AsyncOpenAI | None = None
+
+    def _get_fallback_client(self) -> openai.OpenAI:
+        """Lazily create fallback client pointing to normal z.ai endpoint."""
+        if self._fallback_client is None:
+            self._fallback_client = openai.OpenAI(
+                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL
+            )
+        return self._fallback_client
+
+    def _get_fallback_async_client(self) -> openai.AsyncOpenAI:
+        """Lazily create async fallback client pointing to normal z.ai endpoint."""
+        if self._fallback_async_client is None:
+            self._fallback_async_client = openai.AsyncOpenAI(
+                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL
+            )
+        return self._fallback_async_client
+
+    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Make a completion call, trying Coding Plan first then falling back."""
+        messages = self._prepare_messages(prompt)
+        model = model or self.model_name
+        if not model:
+            raise ValueError("Model name is required")
+
+        start_time = time.time()
+
+        # Try primary endpoint (Coding Plan if enabled)
+        if self._use_coding_plan and not self._coding_plan_failed:
+            try:
+                response = self.client.chat.completions.create(model=model, messages=messages)
+                self._track_usage(response, model, time.time() - start_time)
+                return response.choices[0].message.content
+            except Exception:
+                self._coding_plan_failed = True
+                # Fall through to normal endpoint
+
+        # Fallback to normal endpoint
+        fallback = self._get_fallback_client() if self._use_coding_plan else self.client
+        response = fallback.chat.completions.create(model=model, messages=messages)
+        self._track_usage(response, model, time.time() - start_time)
+        return response.choices[0].message.content
+
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Make an async completion call, trying Coding Plan first then falling back."""
+        messages = self._prepare_messages(prompt)
+        model = model or self.model_name
+        if not model:
+            raise ValueError("Model name is required")
+
+        start_time = time.time()
+
+        # Try primary endpoint (Coding Plan if enabled)
+        if self._use_coding_plan and not self._coding_plan_failed:
+            try:
+                response = await self.async_client.chat.completions.create(
+                    model=model, messages=messages, **kwargs
+                )
+                self._track_usage(response, model, time.time() - start_time)
+                return response.choices[0].message.content
+            except Exception:
+                self._coding_plan_failed = True
+
+        # Fallback to normal endpoint
+        fallback = self._get_fallback_async_client() if self._use_coding_plan else self.async_client
+        response = await fallback.chat.completions.create(
+            model=model, messages=messages, **kwargs
+        )
+        self._track_usage(response, model, time.time() - start_time)
+        return response.choices[0].message.content
 
 
 class GenericOpenAIClient(OpenAICompatibleClient):
@@ -424,7 +519,7 @@ class GroqClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("GROQ_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "llama-3.3-70b",
+            model_name=model_name or "llama-3.3-70b-versatile",
             base_url="https://api.groq.com/openai/v1",
             provider="groq",
             **kwargs,

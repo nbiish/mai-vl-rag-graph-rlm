@@ -340,7 +340,7 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "groq": {
         "env_key": "GROQ_API_KEY",
         "url": "https://console.groq.com",
-        "description": "Groq — Ultra-fast inference (Llama 3.1 70B)",
+        "description": "Groq — Ultra-fast inference (Llama 3.3 70B)",
         "context_budget": 32000,
     },
     "deepseek": {
@@ -370,13 +370,13 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "zenmux": {
         "env_key": "ZENMUX_API_KEY",
         "url": "https://zenmux.ai",
-        "description": "ZenMux — Chinese AI models (ERNIE, GLM, Doubao)",
+        "description": "ZenMux — Unified API gateway (59+ models, OpenAI/Anthropic protocols)",
         "context_budget": 32000,
     },
     "zai": {
         "env_key": "ZAI_API_KEY",
         "url": "https://open.bigmodel.cn",
-        "description": "z.ai (Zhipu AI) — GLM-4.7 series",
+        "description": "z.ai (Zhipu AI) — GLM-4.7 (Coding Plan first, then normal API)",
         "context_budget": 32000,
     },
     "azure_openai": {
@@ -388,7 +388,7 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "cerebras": {
         "env_key": "CEREBRAS_API_KEY",
         "url": "https://cloud.cerebras.ai",
-        "description": "Cerebras — Ultra-fast wafer-scale inference (Llama 4 Scout)",
+        "description": "Cerebras — Ultra-fast wafer-scale inference (Llama 3.3 70B)",
         "context_budget": 32000,
     },
 }

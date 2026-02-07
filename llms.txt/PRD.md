@@ -57,15 +57,15 @@ Every template and integration **must** exercise all six pillars:
 | OpenAI | gpt-4o-mini | 128K | Per-tier |
 | Anthropic | claude-3-5-haiku | 200K | Per-tier |
 | Gemini | gemini-1.5-flash | 1M | Per-tier |
-| Groq | llama-3.1-70b | 128K | Per-tier |
+| Groq | llama-3.3-70b-versatile | 128K | Per-tier |
 | DeepSeek | deepseek-chat | 128K | Per-tier |
-| ZenMux | ernie-5.0-thinking | varies | Per-model |
-| z.ai | glm-4.7 | 128K | Per-tier |
+| ZenMux | moonshotai/kimi-k2.5 | varies | Per-model |
+| z.ai | glm-4.7 | 128K | Coding Plan / Per-tier |
 | Mistral | mistral-large | 128K | Per-tier |
 | Fireworks | llama-3.1-70b | 128K | Per-tier |
 | Together | llama-3.1-70b-turbo | 128K | Per-tier |
 | Azure OpenAI | gpt-4o | 128K | Per-deployment |
-| Cerebras | llama-4-scout-17b-16e-instruct | 128K | Per-tier | Ultra-fast wafer-scale |
+| Cerebras | llama-3.3-70b | 128K | Per-tier |
 | Generic OpenAI | (user-configured) | varies | Per-provider |
 | Generic Anthropic | (user-configured) | varies | Per-provider |
 

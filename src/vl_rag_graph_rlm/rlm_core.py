@@ -81,7 +81,7 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
     hardcoded_recursive = {
         "openrouter": "solar-pro/solar-pro-3:free",
         "zenmux": "z-ai/glm-4.7-flash",  # ZenMux uses provider/model format
-        "zai": "glm-4.7-flash",
+        "zai": "glm-4.5-air",  # Lightweight model available on z.ai Coding Plan
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",
         "gemini": "gemini-1.5-flash",

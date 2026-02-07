@@ -59,7 +59,7 @@
 - [x] Upgrade all 17 provider templates to full 6-pillar pipeline
 - [x] Implement Nebius Token Factory support (MiniMax-M2.1 default)
 - [x] Implement SambaNova Cloud support (DeepSeek-V3.2 default)
-- [x] Implement Cerebras support (llama-4-scout-17b-16e-instruct default)
+- [x] Implement Cerebras support (llama-3.3-70b default)
 - [x] Add generic OpenAI-compatible and Anthropic-compatible provider templates
 - [x] Upgrade transformers to 5.1.0 for Qwen3-VL (`qwen3_vl` architecture)
 - [x] Verify Qwen3-VL visual embeddings working (26 embedded docs, 11 images)
@@ -69,3 +69,7 @@
 - [x] Document PRD with six-pillar architecture in `llms.txt/PRD.md` with all 17 providers
 - [x] Comprehensive `.env.example` with all 17 providers
 - [x] `templates/__init__.py` updated with 6-pillar documentation
+- [x] **ZenMux integration fixed**: Corrected base URL to `https://zenmux.ai/api/v1`, updated model format to `provider/model`
+- [x] **z.ai Coding Plan integration**: Added dual-endpoint support (Coding Plan first, normal fallback)
+- [x] **Groq model fixed**: Updated default to `llama-3.3-70b-versatile`
+- [x] **All provider connectivity verified**: 7 of 8 providers with API keys working (SambaNova rate-limited)

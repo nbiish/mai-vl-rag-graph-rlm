@@ -55,14 +55,14 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> # OpenRouter
         >>> client = get_client('openrouter', api_key='...', model_name='kimi/kimi-k2.5')
 
-        >>> # ZenMux
-        >>> client = get_client('zenmux', api_key='...', model_name='ernie-5.0-thinking-preview')
+        >>> # ZenMux (uses provider/model format)
+        >>> client = get_client('zenmux', api_key='...', model_name='moonshotai/kimi-k2.5')
 
-        >>> # z.ai
+        >>> # z.ai (tries Coding Plan endpoint first, falls back to normal)
         >>> client = get_client('zai', api_key='...', model_name='glm-4.7')
 
         >>> # Groq (fast inference)
-        >>> client = get_client('groq', api_key='...', model_name='llama-3.1-70b-versatile')
+        >>> client = get_client('groq', api_key='...', model_name='llama-3.3-70b-versatile')
 
         >>> # Mistral AI
         >>> client = get_client('mistral', api_key='...', model_name='mistral-large-latest')
@@ -83,7 +83,7 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> client = get_client('nebius', api_key='...', model_name='MiniMaxAI/MiniMax-M2.1')
 
         >>> # Cerebras (ultra-fast wafer-scale inference)
-        >>> client = get_client('cerebras', api_key='...', model_name='llama-4-scout-17b-16e-instruct')
+        >>> client = get_client('cerebras', api_key='...', model_name='llama-3.3-70b')
 
         >>> # Gemini
         >>> client = get_client('gemini', api_key='...', model_name='gemini-1.5-pro')

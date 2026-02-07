@@ -116,8 +116,8 @@ print(result.response)
 | `mistral` | mistral-large | 128K | Per-tier | Generous limits |
 | `fireworks` | llama-3.1-70b | 128K | Per-tier | Serverless |
 | `together` | llama-3.1-70b-turbo | 128K | Per-tier | Generous limits |
-| `zenmux` | ernie-5.0-thinking | varies | Per-model | Chinese AI models |
-| `zai` | glm-4.7 | 128K | Per-tier | Zhipu AI |
+| `zenmux` | moonshotai/kimi-k2.5 | varies | Per-model | Unified API gateway (59+ models) |
+| `zai` | glm-4.7 | 128K | Per-tier | Zhipu AI (Coding Plan first, then normal) |
 | `azure_openai` | gpt-4o | 128K | Per-deployment | Enterprise |
 | `cerebras` | llama-3.3-70b | 128K | Per-tier | Ultra-fast wafer-scale |
 | `openai_compatible` | user-configured | varies | Per-provider | Generic OpenAI-compatible |
@@ -171,7 +171,13 @@ Copy `.env.example` to `.env` and fill in your API keys:
 cp .env.example .env
 ```
 
-Each provider uses `{PROVIDER}_API_KEY`, with optional `{PROVIDER}_MODEL` and `{PROVIDER}_RECURSIVE_MODEL` overrides. See `.env.example` for all options.
+Each provider uses `{PROVIDER}_API_KEY`, with optional `{PROVIDER}_MODEL` and `{PROVIDER}_RECURSIVE_MODEL` overrides.
+
+Special provider notes:
+- **z.ai**: Set `ZAI_CODING_PLAN=true` (default) to try Coding Plan endpoint first, falling back to normal endpoint on failure
+- **ZenMux**: Uses `provider/model-name` format (e.g., `moonshotai/kimi-k2.5`)
+
+See `.env.example` for all options.
 
 ## How It Works
 
@@ -195,6 +201,24 @@ Each provider uses `{PROVIDER}_API_KEY`, with optional `{PROVIDER}_MODEL` and `{
 5. **Answer Synthesis** — Returns final answer via `FINAL()` or `FINAL_VAR()`
 
 ## API Reference
+
+### Client Factory
+
+```python
+from vl_rag_graph_rlm.clients import get_client
+
+# ZenMux — uses provider/model format
+client = get_client('zenmux', model_name='moonshotai/kimi-k2.5')
+
+# z.ai — tries Coding Plan first, falls back to normal
+client = get_client('zai', model_name='glm-4.7')
+
+# All other providers
+client = get_client('groq')
+client = get_client('nebius')
+client = get_client('openrouter')
+# ... etc
+```
 
 ### VLRAGGraphRLM
 
@@ -250,6 +274,15 @@ python templates/provider_openrouter.py --input doc.pdf --query "Summarize"
 Each template demonstrates all six pillars with both `create_pipeline()` and manual step-by-step examples.
 
 ## Troubleshooting
+
+### Troubleshooting Provider Connectivity
+
+| Provider | Common Issues | Solution |
+|----------|--------------|----------|
+| **SambaNova** | 429 rate limit | You've hit 200K TPD free tier. Wait 24h or upgrade to Developer tier |
+| **z.ai** | 429 balance error | Your normal API account needs balance. Coding Plan subscription is separate |
+| **ZenMux** | Connection errors | Now fixed — uses correct `https://zenmux.ai/api/v1` endpoint |
+| **Groq** | 404 model not found | Now fixed — uses correct `llama-3.3-70b-versatile` model |
 
 ### Qwen3-VL won't load
 ```bash

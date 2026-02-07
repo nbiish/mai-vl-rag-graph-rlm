@@ -85,7 +85,11 @@
 │  Providers: SambaNova, Nebius, OpenRouter, OpenAI, Anthropic,       │
 │             Gemini, Groq, Cerebras, DeepSeek, ZenMux, z.ai,        │
 │             Mistral, Fireworks, Together, Azure OpenAI,             │
-│             Generic OpenAI, Generic Anthropic, LiteLLM             │
+│             Generic OpenAI, Generic Anthropic, LiteLLM            │
+│                                                                      │
+│  Provider Notes:                                                     │
+│  - ZenMux: Uses provider/model format (e.g., "moonshotai/kimi-k2.5") │
+│  - z.ai: Tries Coding Plan endpoint first, falls back to normal     │
 └──────────────┬──────────────────────────────────────────────────────┘
                │
                ▼
@@ -238,7 +242,8 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 {PROVIDER}_MODEL=...              # Optional: override default model
 {PROVIDER}_RECURSIVE_MODEL=...    # Optional: cheaper model for recursive calls
 
-# Nebius-specific
+# Provider-specific behavior
+ZAI_CODING_PLAN=true              # Try Coding Plan first (default: true)
 NEBIUS_CONTEXT_WINDOW=128000      # Context window in tokens
 
 # Embedding models (auto-downloaded from HuggingFace)

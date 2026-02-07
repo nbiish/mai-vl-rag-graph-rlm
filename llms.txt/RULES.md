@@ -37,10 +37,23 @@ Device detection patterns in the codebase:
   device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
   ```
 
-## If
+## Provider-Specific Rules
 
-- Qwen3-VL is unavailable → wrap import in `try/except ImportError`, fall back to `MultiFactorReranker` for text-only reranking
-- Provider has token limits (e.g., SambaNova 200K TPD) → budget context size accordingly (8K chars per call)
-- Provider has no token limits (e.g., Nebius) → use larger context windows (up to 100K chars)
-- Running on Apple Silicon → prefer `device="mps"` for Qwen3-VL inference (add MPS check before CUDA)
-- A template is for a generic/compatible provider → use the client directly but still wire through the full pipeline
+### ZenMux
+- ZenMux uses `provider/model-name` format (e.g., `moonshotai/kimi-k2.5`)
+- Endpoint: `https://zenmux.ai/api/v1` (OpenAI protocol) or `https://zenmux.ai/api/anthropic` (Anthropic protocol)
+- The `ZenMuxClient` uses OpenAI-compatible protocol by default
+
+### z.ai
+- z.ai has two endpoints:
+  - Coding Plan (flat-rate $3-15/mo): `https://api.z.ai/api/coding/paas/v4`
+  - Normal (pay-per-token): `https://open.bigmodel.cn/api/paas/v4`
+- `ZaiClient` tries Coding Plan first, automatically falls back to normal endpoint on failure
+- Set `ZAI_CODING_PLAN=false` to skip Coding Plan and use normal endpoint directly
+- Coding Plan models: `glm-4.7`, `glm-4.5-air`
+
+### SambaNova
+- **Critical**: 200K TPD (tokens per day) free tier limit
+- Must budget context aggressively: ~8K chars per call
+- Default model: `DeepSeek-V3.2` (128K context, 200+ tok/s)
+- For unlimited usage, upgrade to Developer tier (12K RPD, no TPD limit)
