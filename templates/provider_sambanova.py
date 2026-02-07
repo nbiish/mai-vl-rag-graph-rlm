@@ -21,7 +21,7 @@ Requirements:
 
 Environment:
     export SAMBANOVA_API_KEY=your_key_here
-    # Optional: export SAMBANOVA_MODEL=DeepSeek-V3.1
+    # Optional: export SAMBANOVA_MODEL=DeepSeek-V3.2
 
 Get API Key: https://cloud.sambanova.ai
 """
@@ -60,10 +60,15 @@ except ImportError:
     print("Warning: Qwen3-VL not available. Install with: pip install vl-rag-graph-rlm[qwen3vl]")
 
 
+def get_model() -> str:
+    """Get model from environment or use default."""
+    return os.getenv("SAMBANOVA_MODEL", "DeepSeek-V3.2")
+
+
 def example_1_unlimited_context():
     """
     Example 1: Process content beyond model context limits.
-    
+
     Uses recursive chunking + RLM to analyze documents of ANY size.
     The RLM recursively processes chunks and builds up understanding.
     """
@@ -72,37 +77,37 @@ def example_1_unlimited_context():
     print("=" * 70)
     print("Process documents of ANY size by recursively analyzing chunks")
     print()
-    
+
     # Simulate a large document (would be 100k+ tokens in reality)
     large_document = """
     [Chapter 1: Introduction to Neural Networks]
     Neural networks are computational models inspired by biological neural systems...
     [50 pages of content...]
-    
+
     [Chapter 5: Attention Mechanisms]
     The attention mechanism allows models to focus on relevant parts of input...
     [80 pages of content...]
-    
+
     [Chapter 12: Vision Transformers]
     ViTs apply transformer architectures to image patches...
     [60 pages of content with figures...]
     """
-    
+
     rlm = VLRAGGraphRLM(
         provider="sambanova",
-        model="DeepSeek-V3.1",
+        model=get_model(),
         temperature=0.0,
         max_depth=5,  # Recursive depth for unlimited context
         max_iterations=20,
     )
-    
+
     query = "Summarize the key architectural innovations across all chapters, focusing on how attention mechanisms evolved from text to vision applications."
-    
+
     print(f"Document size: ~200 pages (simulated)")
     print(f"Query: {query[:80]}...")
     print(f"Max recursion depth: {rlm.max_depth}")
     print("-" * 70)
-    
+
     result = rlm.completion(query, large_document)
     print(f"\nResponse:\n{result.response[:500]}...")
     print(f"\nExecution time: {result.execution_time:.2f}s")
@@ -111,50 +116,50 @@ def example_1_unlimited_context():
 def example_2_multimodal_rag():
     """
     Example 2: Vision RAG - Query across text AND images.
-    
+
     Uses Qwen3-VL embeddings to create unified embeddings for:
     - Text documents
-    - Screenshots and diagrams  
+    - Screenshots and diagrams
     - PDF pages with figures
-    
+
     All content is searchable in a single vector space.
     """
     print("\n" + "=" * 70)
     print("EXAMPLE 2: Vision RAG (Multimodal Document Processing)")
     print("=" * 70)
-    
+
     if not HAS_MULTIMODAL:
         print("SKIPPED: Qwen3-VL not installed")
         print("Install with: pip install vl-rag-graph_rlm[qwen3vl]")
         return
-    
+
     print("Process PDFs with figures, screenshots, and diagrams")
     print("All content embedded in unified multimodal vector space")
     print()
-    
+
     # Initialize multimodal embedding model
     embedder = create_qwen3vl_embedder("Qwen/Qwen3-VL-Embedding-2B")
     reranker = create_qwen3vl_reranker("Qwen/Qwen3-VL-Reranker-2B")
-    
+
     print("Models loaded:")
     print(f"  - Embedder: Qwen3-VL-Embedding-2B")
     print(f"  - Reranker: Qwen3-VL-Reranker-2B")
     print()
-    
+
     # Example: Process a multimodal document
     print("Simulating document ingestion:")
     print("  1. PDF 'research_paper.pdf' with 20 pages + 8 figures")
     print("  2. Screenshot 'architecture_diagram.png'")
     print("  3. Code file 'model.py' with docstrings")
     print()
-    
+
     # In real usage:
     # from vl_rag_graph_rlm.pipeline import MultimodalRAGPipeline
     # pipeline = MultimodalRAGPipeline(embedder=embedder, reranker=reranker)
     # pipeline.add_pdf("research_paper.pdf", extract_images=True)
     # pipeline.add_image("architecture_diagram.png")
     # result = pipeline.query("Explain the attention mechanism shown in Figure 3")
-    
+
     query = "Explain the architecture diagram showing the transformer blocks"
     print(f"Query: {query}")
     print("\nNote: This would search across text AND image embeddings")
@@ -171,29 +176,29 @@ def example_3_knowledge_graph():
     print("=" * 70)
     print("Extract entities and relationships from documents")
     print()
-    
+
     # Simplified example to fit within token limits
     tech_doc = """Kubernetes: kube-apiserver manages API requests.
     etcd stores cluster state. kube-scheduler assigns pods to nodes.
     Worker nodes run kubelet and kube-proxy."""
-    
+
     rlm = VLRAGGraphRLM(
         provider="sambanova",
-        model="DeepSeek-V3.1",
+        model=get_model(),
         temperature=0.0,
     )
-    
+
     print("Document: Kubernetes components")
     print("Extracting entities and relationships...")
     print("-" * 70)
-    
+
     # Simpler prompt to avoid token limit
     result = rlm.completion(
         "Extract entities and relationships from this text. Format: Entity -> Relationship -> Entity",
         tech_doc
     )
     print(f"\nKnowledge Graph Extraction:\n{result.response}")
-    
+
     # Query the extracted knowledge
     query = "How do kube-apiserver and etcd interact?"
     print(f"\nQuery: {query}")
@@ -203,7 +208,7 @@ def example_3_knowledge_graph():
 def example_4_hybrid_search():
     """
     Example 4: Hybrid Search with RRF Fusion + Composite Reranker.
-    
+
     Combines:
     - Dense vector search (semantic similarity)
     - Keyword/BM25 search (exact matches)
@@ -216,39 +221,39 @@ def example_4_hybrid_search():
     print("Milvus vector store with hybrid dense + keyword search")
     print("RRF fusion + composite reranking for best results")
     print()
-    
+
     # Initialize components
     print("Components:")
     print("  - MilvusVectorStore: Hybrid dense + keyword search")
     print("  - ReciprocalRankFusion: Combine dense and keyword results")
     print("  - CompositeReranker: Fuzzy + keyword + semantic scoring")
     print()
-    
+
     # Simulate search results
     dense_results = [
         SearchResult(content="Neural networks use attention mechanisms...", score=0.95),
         SearchResult(content="Transformer architecture overview...", score=0.88),
     ]
-    
+
     keyword_results = [
         SearchResult(content="Attention is all you need paper...", score=0.92),
         SearchResult(content="Self-attention in transformers...", score=0.85),
     ]
-    
+
     rrf = ReciprocalRankFusion(k=60)
     reranker = CompositeReranker()
-    
+
     query = "attention mechanism in transformers"
-    
+
     print(f"Query: {query}")
     print(f"Dense results: {len(dense_results)} chunks")
     print(f"Keyword results: {len(keyword_results)} chunks")
     print()
-    
+
     # Fuse results
     fused = rrf.fuse([dense_results, keyword_results])
     print(f"After RRF fusion: {len(fused)} chunks")
-    
+
     # Rerank
     reranked, status = reranker.process(query, [r.__dict__ for r in fused])
     print(f"After composite reranking: {len(reranked)} chunks")
@@ -258,7 +263,7 @@ def example_4_hybrid_search():
 def example_5_codebase_analysis():
     """
     Example 5: Analyze entire codebase with vision support.
-    
+
     Process:
     - All source files (Python, JS, etc.)
     - Architecture diagrams (PNG, SVG)
@@ -274,32 +279,32 @@ def example_5_codebase_analysis():
     print("  - Documentation (markdown, rst)")
     print("  - Configuration files")
     print()
-    
+
     rlm = VLRAGGraphRLM(
         provider="sambanova",
-        model="DeepSeek-V3.1",
+        model=get_model(),
         temperature=0.1,
         max_depth=3,
     )
-    
+
     print("Simulated repository: microservices-platform/")
     print("  - 150 Python files (25,000 lines)")
     print("  - 12 architecture diagrams")
     print("  - 8 markdown documentation files")
     print("  - Database schemas and API specs")
     print()
-    
+
     queries = [
         "Find all authentication-related code and explain the flow",
         "Show me the architecture diagram for the payment service",
         "What database models are used for user management?",
         "Explain the caching strategy across all services",
     ]
-    
+
     print("Example queries:")
     for i, q in enumerate(queries, 1):
         print(f"  {i}. {q}")
-    
+
     print(f"\nSelected query: {queries[0]}")
     print("\nThe RLM would:")
     print("  1. Search code + docs + diagrams for 'authentication'")
@@ -316,7 +321,9 @@ def main():
         print("\nThen run:")
         print("  export SAMBANOVA_API_KEY=your_key_here")
         return
-    
+
+    model = get_model()
+
     print("=" * 70)
     print("VL-RAG-Graph-RLM: Advanced Capabilities Demo")
     print("=" * 70)
@@ -328,16 +335,17 @@ def main():
     print("  ✓ Hybrid search with RRF fusion")
     print("  ✓ Complete codebase analysis")
     print()
-    print("Provider: SambaNova Cloud (DeepSeek-V3.1)")
+    print(f"Provider: SambaNova Cloud")
+    print(f"Model: {model} (from SAMBANOVA_MODEL env var or default)")
     print("=" * 70)
-    
+
     try:
         example_1_unlimited_context()
         example_2_multimodal_rag()
         example_3_knowledge_graph()
         example_4_hybrid_search()
         example_5_codebase_analysis()
-        
+
         print("\n" + "=" * 70)
         print("All advanced examples completed!")
         print("=" * 70)
@@ -347,7 +355,7 @@ def main():
         print("  2. Try with your own documents: pipeline.add_pdf('your_doc.pdf')")
         print("  3. Scale to larger datasets with Milvus vector store")
         print()
-        
+
     except Exception as e:
         print(f"\nError: {e}")
         import traceback

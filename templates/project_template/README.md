@@ -8,7 +8,7 @@ A complete template for building **beyond expert** RAG applications with unlimit
 - **Vision RAG**: Process PDFs with images, screenshots, diagrams alongside text
 - **Knowledge Graphs**: Extract entities/relationships from unstructured data
 - **Hybrid Search**: Dense + keyword + RRF fusion + composite reranking
-- **SOTA Models**: DeepSeek-V3.1 via SambaNova (200+ tok/sec, 128K context)
+- **SOTA Models**: DeepSeek-V3.2 via SambaNova (200+ tok/sec, 128K context)
 
 ## Quick Start
 
@@ -146,7 +146,7 @@ from vl_rag_graph_rlm import VLRAGGraphRLM
 
 rlm = VLRAGGraphRLM(
     provider="sambanova",
-    model="DeepSeek-V3.1",
+    model="DeepSeek-V3.2",
     max_depth=10,          # Handle 10x context window
     max_iterations=100,    # Up to 100 recursive calls
 )

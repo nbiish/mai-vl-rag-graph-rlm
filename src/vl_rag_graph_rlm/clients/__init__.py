@@ -8,6 +8,7 @@ from vl_rag_graph_rlm.clients.gemini import GeminiClient
 from vl_rag_graph_rlm.clients.litellm import LiteLLMClient
 from vl_rag_graph_rlm.clients.openai_compatible import (
     AzureOpenAIClient,
+    CerebrasClient,
     DeepSeekClient,
     FireworksClient,
     GenericOpenAIClient,
@@ -76,10 +77,13 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> client = get_client('deepseek', api_key='...', model_name='deepseek-chat')
 
         >>> # SambaNova Cloud (fast DeepSeek inference, 128K context)
-        >>> client = get_client('sambanova', api_key='...', model_name='DeepSeek-V3.1')
+        >>> client = get_client('sambanova', api_key='...', model_name='DeepSeek-V3.2')
 
-        >>> # Nebius Token Factory (GLM-4.7, DeepSeek, Llama)
-        >>> client = get_client('nebius', api_key='...', model_name='z-ai/GLM-4.7')
+        >>> # Nebius Token Factory (MiniMax, GLM-4.7, DeepSeek, Llama)
+        >>> client = get_client('nebius', api_key='...', model_name='MiniMaxAI/MiniMax-M2.1')
+
+        >>> # Cerebras (ultra-fast wafer-scale inference)
+        >>> client = get_client('cerebras', api_key='...', model_name='llama-4-scout-17b-16e-instruct')
 
         >>> # Gemini
         >>> client = get_client('gemini', api_key='...', model_name='gemini-1.5-pro')
@@ -121,6 +125,8 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         return SambaNovaClient(**kwargs)
     elif provider == "nebius":
         return NebiusClient(**kwargs)
+    elif provider == "cerebras":
+        return CerebrasClient(**kwargs)
     elif provider == "litellm":
         return LiteLLMClient(**kwargs)
     else:
@@ -148,4 +154,5 @@ __all__ = [
     "DeepSeekClient",
     "SambaNovaClient",
     "NebiusClient",
+    "CerebrasClient",
 ]

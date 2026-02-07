@@ -8,7 +8,7 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
 - **VL**: Vision-Language embeddings (Qwen3-VL-Embedding-2B, 2048 dimensions)
 - **RAG**: Retrieval-Augmented Generation (Dense + Keyword hybrid search with RRF)
 - **Graph**: Knowledge graph construction from unstructured text
-- **RLM**: Recursive Language Model (DeepSeek-V3.1 via SambaNova Cloud)
+- **RLM**: Recursive Language Model (DeepSeek-V3.2 via SambaNova Cloud)
 
 ## Architecture Components
 
@@ -16,15 +16,15 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
 - **VLRAGGraphRLM**: Main class combining alexzhang13/rlm and ysz/recursive-llm approaches
 - **Recursive Processing**: Processes documents by chunking with depth tracking
 - **Safe REPL Execution**: RestrictedPython for secure code exploration
-- **Multi-Provider Support**: OpenRouter, OpenAI, Anthropic, Gemini, SambaNova, Nebius, LiteLLM
+- **Multi-Provider Support**: OpenRouter, OpenAI, Anthropic, Gemini, SambaNova, Nebius, Groq, Cerebras, ZenMux, z.ai, DeepSeek, Mistral, Fireworks, Together, Azure OpenAI, LiteLLM
 - **Model Selection Priority**: Code-specified > Environment variable > Hardcoded default
-  - SambaNova default: DeepSeek-V3.1 (latest, 200+ tok/sec, 128K context)
+  - SambaNova default: DeepSeek-V3.2 (latest, 200+ tok/sec, 128K context)
   - Alternative: DeepSeek-V3-0324 (250+ tok/sec)
 
 ### 2. Client System (src/vl_rag_graph_rlm/clients/)
 - **SambaNovaClient**: OpenAI-compatible client for SambaNova Cloud
   - Base URL: https://api.sambanova.ai/v1
-  - Model: DeepSeek-V3.1 (latest)
+  - Model: DeepSeek-V3.2 (latest)
   - Alternative: DeepSeek-V3-0324 (fastest inference)
   - Supports: DeepSeek-R1-0528, DeepSeek-R1-Distill-Llama-70B, Llama-4-Maverick
   - Client Factory: get_client(provider, **kwargs) routes provider names to appropriate client
@@ -60,7 +60,7 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
   - Hybrid search (dense + keyword + RRF)
   - Qwen3-VL reranking (cross-attention)
   - RLM with recursive reasoning (VLRAGGraphRLM)
-  - Multi-provider LLM support (OpenRouter, OpenAI, Anthropic, Gemini)
+  - Multi-provider LLM support (SambaNova, Nebius, OpenRouter, OpenAI, Anthropic, Gemini, Groq, Cerebras, etc.)
   - OCR support: Paddle OCR for PDF images, pdf2image fallback
   - Document types: PDF (w/ images), PPTX, TXT, MD
   - Storage: Optional persistence to JSON file
@@ -71,7 +71,7 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
 - Features:
   - Document processing: PPTX via python-pptx (slide text, images)
   - Qwen3-VL integration: Local multimodal embeddings and reranker
-  - Knowledge graph: Extracted via DeepSeek-V3.1
+  - Knowledge graph: Extracted via DeepSeek-V3.2
   - Reranking: CompositeReranker with multi-signal scoring
   - Context budgeting: 8K chars per call (for free tier 200K TPD)
   - Markdown report generation
@@ -81,7 +81,7 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
 ### Available Models
 | Model ID | Context | Speed |
 |-----------|---------|-------|
-| DeepSeek-V3.1 | 128K tokens | 200+ tok/sec (latest) |
+| DeepSeek-V3.2 | 128K tokens | 200+ tok/sec (latest) |
 | DeepSeek-V3-0324 | 128K tokens | 250+ tok/sec (fastest) |
 | DeepSeek-R1-0528 | 128K tokens | Reasoning |
 
@@ -93,7 +93,7 @@ This codebase implements a Vision-Language RAG Graph Recursive Language Model (V
 ### Environment Variables
 ```bash
 export SAMBANOVA_API_KEY=your_key_here
-export SAMBANOVA_MODEL=DeepSeek-V3.1  # Optional: defaults to DeepSeek-V3.1
+export SAMBANOVA_MODEL=DeepSeek-V3.2  # Optional: defaults to DeepSeek-V3.2
 ```
 
 ## Qwen3-VL Dependencies
@@ -136,14 +136,14 @@ Tested: examples/Writing Tutorial 2022.pptx
 | Knowledge Graph | 20 key concepts extracted from 8K char context |
 | Query Responses | 2 queries answered successfully |
 | Total Time | 47.73s |
-| Model | DeepSeek-V3.1 |
+| Model | DeepSeek-V3.2 |
 | Embeddings Store | examples/.vrlmrag_store/embeddings.json (735KB persisted) |
 
 ## Key Changes Made
 
-1. **Fixed Model Name Bug**: Changed all `DeepSeek-V3.2` references to `DeepSeek-V3.1`
+1. **Fixed Model Name Bug**: Standardized SambaNova default model to `DeepSeek-V3.2`
    - Files updated: vrlmrag.py, openai_compatible.py, rlm_core.py, clients/__init__.py, .env.example, all templates, all test files
-   - Reason: `DeepSeek-V3.2` doesn't exist on SambaNova
+   - Reason: `DeepSeek-V3.2` is the current default on SambaNova
 
 2. **Fixed Token Limit Handling**: Corrected misunderstanding of SambaNova limits
    - Old: Comment "8K context", context truncated to 1200-1500 chars
@@ -185,7 +185,7 @@ from vl_rag_graph_rlm.pipeline import MultimodalRAGPipeline
 # Initialize pipeline with Qwen3-VL
 pipeline = MultimodalRAGPipeline(
     llm_provider="sambanova",
-    llm_model="DeepSeek-V3.1",
+    llm_model="DeepSeek-V3.2",
     embedding_model="Qwen/Qwen3-VL-Embedding-2B",
     use_reranker=True,
     storage_path="examples/.vrlmrag_store/embeddings.json"
@@ -213,7 +213,7 @@ With SambaNova free tier (200K TPD):
 ## Summary
 
 The VL-RAG-Graph-RLM system is now fully integrated with:
-✅ Correct SambaNova model (DeepSeek-V3.1)
+✅ Correct SambaNova model (DeepSeek-V3.2)
 ✅ Proper token limit handling (200K TPD budget, 8K char context per query)
 ✅ Full Qwen3-VL embeddings and reranker pipeline
 ✅ Vision-Language support for text + images in unified vector space
@@ -221,4 +221,4 @@ The VL-RAG-Graph-RLM system is now fully integrated with:
 ✅ Persistent embeddings storage (JSON format)
 ✅ Complete CLI tool with markdown report generation
 
-The system processes documents end-to-end: Document Intake → Qwen3-VL Embeddings → Hybrid Search → Qwen3-VL Reranking → DeepSeek-V3.1 RLM → Knowledge Graph → Markdown Report
+The system processes documents end-to-end: Document Intake → Qwen3-VL Embeddings → Hybrid Search → Qwen3-VL Reranking → DeepSeek-V3.2 RLM → Knowledge Graph → Markdown Report

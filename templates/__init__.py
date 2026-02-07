@@ -1,13 +1,19 @@
 """
-Provider Templates - VL-RAG-Graph-RLM
+Provider Templates — VL-RAG-Graph-RLM (Full 6-Pillar Architecture)
 
-This folder contains ready-to-use templates for each supported provider.
-Each template shows the recommended models and configuration.
+Every template demonstrates the complete pipeline:
+  1. VL: Qwen3-VL multimodal embeddings (text + images)
+  2. RAG: Hybrid search (dense + keyword) with RRF fusion
+  3. Reranker: Qwen3-VL cross-attention reranking
+  4. Graph: Knowledge graph extraction via RLM
+  5. RLM: Recursive Language Model with REPL
+  6. Pipeline: Markdown report generation
 
 Usage:
-    cp provider_openrouter.py my_project.py
-    # Edit my_project.py to customize
+    python templates/provider_sambanova.py --input document.pptx
+    python templates/provider_nebius.py --input document.pptx --output report.md
+    python templates/provider_openrouter.py --input doc.pdf --query "Summarize"
+    python templates/provider_openai.py --manual
 
-Or use directly:
-    python templates/provider_sambanova.py
+See llms.txt/ARCHITECTURE.md for the full system diagram.
 """

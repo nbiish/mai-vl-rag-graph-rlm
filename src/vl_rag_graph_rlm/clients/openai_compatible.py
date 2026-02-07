@@ -24,19 +24,20 @@ class OpenAICompatibleClient(BaseLM):
     DEFAULT_URLS = {
         "openai": "https://api.openai.com/v1",
         "openrouter": "https://openrouter.ai/api/v1",
-        "zenmux": "https://api.zenmux.ai/v1",
+        "zenmux": "https://zenmux.ai/api/v1",
         "zai": "https://open.bigmodel.cn/api/paas/v4",
     }
 
     # Recommended cheap SOTA models by provider
     RECOMMENDED_MODELS = {
         "zenmux": {
-            "default": "ernie-5.0-thinking-preview",
-            "coding": "dubao-seed-1.8",
-            "fast": "glm-4.7-flash",
+            "default": "baidu/ernie-5.0-thinking",
+            "coding": "bytedance/doubao-seed-1.8",
+            "fast": "z-ai/glm-4.7-flash",
         },
         "openrouter": {
             "default": "minimax/minimax-m2.1",
+            "nebius": "meta-llama/Meta-Llama-3.1-70B-Instruct",
             "coding": "z-ai/glm-4.7",
             "free": "solar-pro/solar-pro-3:free",
             "fast": "google/gemini-3-flash-preview",
@@ -224,17 +225,26 @@ class OpenRouterClient(OpenAICompatibleClient):
 
 class ZenMuxClient(OpenAICompatibleClient):
     """Convenience class for ZenMux API.
-    
-    Recommended models:
-        - ernie-5.0-thinking-preview: Best for reasoning
-        - dubao-seed-1.8: Best for coding
-        - glm-4.7-flash: Fast, cheap responses
+
+    ZenMux is a unified API gateway supporting OpenAI and Anthropic protocols.
+    Models use provider/model-name format (e.g., "moonshotai/kimi-k2.5").
+
+    OpenAI protocol endpoint: https://zenmux.ai/api/v1
+    Anthropic protocol endpoint: https://zenmux.ai/api/anthropic
+
+    Recommended models (OpenAI protocol):
+        - moonshotai/kimi-k2.5: Excellent reasoning, very capable
+        - baidu/ernie-5.0-thinking: Best for reasoning
+        - bytedance/doubao-seed-1.8: Best for coding
+        - z-ai/glm-4.7-flash: Fast, cheap responses
+
+    Docs: https://docs.zenmux.ai/guide/quickstart.html
     """
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "ernie-5.0-thinking-preview",
+            model_name=model_name or "moonshotai/kimi-k2.5",
             provider="zenmux",
             **kwargs,
         )
@@ -403,8 +413,8 @@ class GroqClient(OpenAICompatibleClient):
     Client for Groq API (ultra-fast inference).
 
     Recommended models:
-        - llama-3.1-70b-versatile: Fast, capable
-        - llama-3.1-8b-instant: Fastest, cheapest
+        - llama-3.3-70b-versatile: Latest Llama 3.3 70B (recommended)
+        - llama-3.1-8b: Fast, cost-effective
         - mixtral-8x7b-32768: Large context
 
     Get API key: https://console.groq.com
@@ -414,7 +424,7 @@ class GroqClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("GROQ_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "llama-3.1-70b-versatile",
+            model_name=model_name or "llama-3.3-70b",
             base_url="https://api.groq.com/openai/v1",
             provider="groq",
             **kwargs,
@@ -515,7 +525,7 @@ class SambaNovaClient(OpenAICompatibleClient):
     Client for SambaNova Cloud API.
 
     Production models (128K context):
-        - DeepSeek-V3.1: Latest DeepSeek V3 (200+ tok/sec)
+        - DeepSeek-V3.2: Latest DeepSeek V3 (200+ tok/sec)
         - DeepSeek-V3-0324: DeepSeek V3 March 2024 (250+ tok/sec)
         - DeepSeek-R1-0528: Reasoning model
         - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
@@ -534,7 +544,7 @@ class SambaNovaClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("SAMBANOVA_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "DeepSeek-V3.1",
+            model_name=model_name or "DeepSeek-V3.2",
             base_url="https://api.sambanova.ai/v1",
             provider="sambanova",
             **kwargs,
@@ -546,12 +556,13 @@ class NebiusClient(OpenAICompatibleClient):
     Client for Nebius Token Factory API.
 
     Recommended models:
+        - MiniMaxAI/MiniMax-M2.1: MiniMax M2.1 (default)
         - z-ai/GLM-4.7: Z.AI's flagship for agentic coding and reasoning
         - deepseek-ai/DeepSeek-R1-0528: DeepSeek R1 reasoning
         - meta-llama/Meta-Llama-3.1-70B-Instruct: Llama 3.1 70B
 
     Nebius Token Factory provides OpenAI-compatible access to various
-    models including GLM-4.7, DeepSeek, and Llama series.
+    models including MiniMax, GLM-4.7, DeepSeek, and Llama series.
 
     Get API key: https://tokenfactory.nebius.com
     """
@@ -560,8 +571,36 @@ class NebiusClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("NEBIUS_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "z-ai/GLM-4.7",
+            model_name=model_name or "MiniMaxAI/MiniMax-M2.1",
             base_url="https://api.tokenfactory.nebius.com/v1",
             provider="nebius",
+            **kwargs,
+        )
+
+
+class CerebrasClient(OpenAICompatibleClient):
+    """
+    Client for Cerebras Inference API.
+
+    Recommended models:
+        - llama-3.3-70b: Llama 3.3 70B (recommended production model)
+        - llama3.1-8b: Llama 3.1 8B (fast, cost-effective)
+        - qwen-3-32b: Qwen 3 32B
+        - zai-glm-4.7: Z.AI GLM 4.7 (preview)
+
+    Cerebras provides ultra-fast inference on custom wafer-scale hardware
+    with OpenAI-compatible API.
+
+    Get API key: https://cloud.cerebras.ai
+    Docs: https://inference-docs.cerebras.ai
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("CEREBRAS_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "llama-3.3-70b",
+            base_url="https://api.cerebras.ai/v1",
+            provider="cerebras",
             **kwargs,
         )

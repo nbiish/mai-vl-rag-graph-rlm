@@ -10,7 +10,7 @@ This template provides a complete, working project structure that you can clone 
 - **Vision RAG**: Handle PDFs with images, screenshots, diagrams alongside text  
 - **Knowledge Graphs**: Extract entities/relationships from unstructured data
 - **Hybrid Search**: Dense + keyword + RRF fusion + composite reranking
-- **SOTA Models**: DeepSeek-V3.1 via SambaNova (200+ tok/sec, 128K context)
+- **SOTA Models**: DeepSeek-V3.2 via SambaNova (200+ tok/sec, 128K context)
 
 ## Quick Start (New Project)
 
@@ -78,7 +78,7 @@ from src.pipelines.multimodal_rag import MultimodalRAGPipeline
 
 pipeline = MultimodalRAGPipeline(
     provider="sambanova",
-    model="DeepSeek-V3.1",
+    model="DeepSeek-V3.2",
 )
 
 # Add 500-page PDF with 50 figures
@@ -126,7 +126,7 @@ from vl_rag_graph_rlm import VLRAGGraphRLM
 
 rlm = VLRAGGraphRLM(
     provider="sambanova",
-    model="DeepSeek-V3.1",
+    model="DeepSeek-V3.2",
     max_depth=10,
     max_iterations=100,
 )

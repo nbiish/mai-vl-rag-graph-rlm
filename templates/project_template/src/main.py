@@ -31,7 +31,7 @@ def example_1_unlimited_context():
     # Initialize RLM with recursive depth
     rlm = VLRAGGraphRLM(
         provider="sambanova",
-        model="DeepSeek-V3.1",
+        model="DeepSeek-V3.2",
         max_depth=5,  # Handle 5x the base context
         max_iterations=20,
     )
@@ -67,7 +67,7 @@ def example_3_knowledge_graph():
     print("EXAMPLE 3: Knowledge Graph Construction")
     print("=" * 70)
     
-    rlm = VLRAGGraphRLM(provider="sambanova", model="DeepSeek-V3.1")
+    rlm = VLRAGGraphRLM(provider="sambanova", model="DeepSeek-V3.2")
     
     doc = "Kubernetes: kube-apiserver manages API. etcd stores state."
     result = rlm.completion(

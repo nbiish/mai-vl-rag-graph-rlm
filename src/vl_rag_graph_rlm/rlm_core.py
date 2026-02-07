@@ -35,6 +35,7 @@ def _get_default_model(provider: str) -> str:
         "deepseek": "DEEPSEEK_MODEL",
         "sambanova": "SAMBANOVA_MODEL",
         "nebius": "NEBIUS_MODEL",
+        "cerebras": "CEREBRAS_MODEL",
     }
     env_var = env_var_map.get(provider, f"{provider.upper()}_MODEL")
     env_model = os.getenv(env_var)
@@ -44,18 +45,19 @@ def _get_default_model(provider: str) -> str:
     # Fall back to hardcoded defaults
     hardcoded_defaults = {
         "openrouter": "minimax/minimax-m2.1",
-        "zenmux": "ernie-5.0-thinking-preview",
+        "zenmux": "moonshotai/kimi-k2.5",  # ZenMux uses provider/model format
         "zai": "glm-4.7",
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",
         "gemini": "gemini-1.5-flash",
-        "groq": "llama-3.1-70b-versatile",
+        "groq": "llama-3.3-70b-versatile",
         "mistral": "mistral-large-latest",
         "fireworks": "accounts/fireworks/models/llama-v3p1-70b-instruct",
         "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
         "deepseek": "deepseek-chat",
-        "sambanova": "DeepSeek-V3.1",  # Latest DeepSeek V3 on SambaNova (200+ tok/sec, 128K context)
-        "nebius": "z-ai/GLM-4.7",  # GLM-4.7 from Z.AI
+        "sambanova": "DeepSeek-V3.2",  # Latest DeepSeek V3 on SambaNova (200+ tok/sec, 128K context)
+        "nebius": "MiniMaxAI/MiniMax-M2.1",  # MiniMax M2.1 on Nebius Token Factory
+        "cerebras": "llama-3.3-70b",  # Llama 3.3 70B on Cerebras wafer-scale
     }
     return hardcoded_defaults.get(provider, "gpt-4o-mini")
 
@@ -78,7 +80,7 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
     # Fall back to hardcoded defaults
     hardcoded_recursive = {
         "openrouter": "solar-pro/solar-pro-3:free",
-        "zenmux": "glm-4.7-flash",
+        "zenmux": "z-ai/glm-4.7-flash",  # ZenMux uses provider/model format
         "zai": "glm-4.7-flash",
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",

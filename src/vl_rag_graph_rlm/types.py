@@ -21,6 +21,7 @@ ProviderType = Literal[
     "deepseek",
     "sambanova",
     "nebius",
+    "cerebras",
     "litellm",
 ]
 

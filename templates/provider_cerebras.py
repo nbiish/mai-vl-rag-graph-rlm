@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenAI Template — Full VL-RAG-Graph-RLM Pipeline
+Cerebras Template — Full VL-RAG-Graph-RLM Pipeline (Ultra-Fast Wafer-Scale Inference)
 
 Demonstrates all six pillars:
   1. VL: Qwen3-VL multimodal embeddings (text + images)
@@ -11,16 +11,16 @@ Demonstrates all six pillars:
   6. Pipeline: Markdown report generation
 
 Recommended Models:
-    - gpt-4o-mini: Cheap, fast, capable
-    - gpt-4o: Most capable
-    - gpt-4o-latest: Latest version
+    - llama-4-scout-17b-16e-instruct: Llama 4 Scout (fast, default)
+    - llama3.3-70b: Llama 3.3 70B
+    - qwen-3-32b: Qwen 3 32B
 
 Environment:
-    export OPENAI_API_KEY=your_key_here
-    # Optional: export OPENAI_MODEL=gpt-4o-mini
-    # Optional: export OPENAI_RECURSIVE_MODEL=gpt-4o-mini
+    export CEREBRAS_API_KEY=your_key_here
+    # Optional: export CEREBRAS_MODEL=llama-4-scout-17b-16e-instruct
 
-Get API Key: https://platform.openai.com
+Get API Key: https://cloud.cerebras.ai
+Docs: https://inference-docs.cerebras.ai
 """
 
 import os
@@ -32,13 +32,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from vl_rag_graph_rlm import VLRAGGraphRLM, MultimodalRAGPipeline, create_pipeline
+from vl_rag_graph_rlm import VLRAGGraphRLM, create_pipeline
 
 
 def example_full_pipeline(input_path: str, query: str = "What are the main topics covered?"):
     """Full 6-pillar pipeline: VL embeddings → RAG → reranker → graph → RLM → report."""
     pipeline = create_pipeline(
-        llm_provider="openai",
+        llm_provider="cerebras",
         embedding_model="Qwen/Qwen3-VL-Embedding-2B",
         use_reranker=True,
     )
@@ -53,7 +53,7 @@ def example_full_pipeline(input_path: str, query: str = "What are the main topic
 
     result = pipeline.query(query)
     print(f"Answer: {result.answer[:500]}...")
-    print(f"Sources: {len(result.sources)}, Time: {result.execution_time:.2f}s")
+    print(f"Sources: {len(result.sources)}, Time: {result.execution_time:.2f}s (Wafer-scale fast!)")
 
 
 def example_manual_pipeline():
@@ -61,55 +61,55 @@ def example_manual_pipeline():
     try:
         from vl_rag_graph_rlm.rag.qwen3vl import create_qwen3vl_embedder, create_qwen3vl_reranker
         from vl_rag_graph_rlm.rag.multimodal_store import MultimodalVectorStore
-        from vl_rag_graph_rlm.rag import ReciprocalRankFusion
         import torch
         has_vl = True
     except ImportError:
         has_vl = False
 
-    # --- Pillar 1: VL Embeddings ---
+    texts = [
+        "Wafer-scale computing uses entire silicon wafers as single chips.",
+        "Cerebras CS-3 achieves ultra-fast inference with massive parallelism.",
+        "Large language models benefit from high memory bandwidth and compute density.",
+    ]
+
     if has_vl:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         embedder = create_qwen3vl_embedder(device=device)
         store = MultimodalVectorStore(embedding_provider=embedder)
-        store.add_text("Clean code is readable, maintainable, and testable.", metadata={"source": "principles"})
-        store.add_text("SOLID principles guide object-oriented design.", metadata={"source": "oop"})
-        store.add_text("DRY means Don't Repeat Yourself.", metadata={"source": "patterns"})
+        for t in texts:
+            store.add_text(t, metadata={"type": "text"})
 
-        # --- Pillar 2: RAG — Dense search ---
-        query = "What are clean code principles?"
+        query = "Explain the advantages of wafer-scale computing for LLM inference."
         dense_results = store.search(query, top_k=10)
 
-        # --- Pillar 3: Reranker ---
         reranker = create_qwen3vl_reranker(device=device)
         docs = [{"text": store.get(r.id).content} for r in dense_results if store.get(r.id)]
         reranked = reranker.rerank(query={"text": query}, documents=docs)
         context = "\n".join([docs[idx]["text"] for idx, _ in reranked[:3]])
     else:
-        context = "Clean code is readable. SOLID principles guide OOP. DRY means Don't Repeat Yourself."
-        query = "What are clean code principles?"
+        context = "\n".join(texts)
+        query = "Explain the advantages of wafer-scale computing for LLM inference."
 
-    # --- Pillar 4: Graph ---
-    rlm = VLRAGGraphRLM(provider="openai", temperature=0.0)
+    rlm = VLRAGGraphRLM(provider="cerebras", temperature=0.0)
     kg = rlm.completion("Extract key entities and relationships.", context)
     print(f"Knowledge graph: {kg.response[:200]}...")
 
-    # --- Pillar 5: RLM ---
     result = rlm.completion(query, context)
     print(f"Answer: {result.response[:300]}...")
+    print(f"Time: {result.execution_time:.2f}s (Wafer-scale fast!)")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="OpenAI — Full VL-RAG-Graph-RLM Pipeline")
+    parser = argparse.ArgumentParser(description="Cerebras — Full VL-RAG-Graph-RLM Pipeline")
     parser.add_argument("--input", "-i", help="Document to process (PPTX, PDF, TXT, MD)")
     parser.add_argument("--query", "-q", default="What are the main topics covered?")
     parser.add_argument("--manual", action="store_true", help="Run manual pipeline example")
     args = parser.parse_args()
 
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY not set")
-        print("Get your API key from: https://platform.openai.com")
+    if not os.getenv("CEREBRAS_API_KEY"):
+        print("Error: CEREBRAS_API_KEY not set")
+        print("Get your API key from: https://cloud.cerebras.ai")
         return
 
     if args.manual:
@@ -118,9 +118,8 @@ def main():
         example_full_pipeline(args.input, args.query)
     else:
         print("Usage:")
-        print("  python provider_openai.py --input document.pptx")
-        print("  python provider_openai.py --input doc.pdf --query 'Summarize key concepts'")
-        print("  python provider_openai.py --manual")
+        print("  python provider_cerebras.py --input document.pptx")
+        print("  python provider_cerebras.py --manual")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
-VRLMRAG - VL-RAG-Graph-RLM CLI Tool
+vrlmrag — VL-RAG-Graph-RLM CLI
 
-Process documents using the full VL-RAG-Graph-RLM architecture:
-- VL: Vision-Language embeddings (Qwen3-VL-Embedding-2B)
-- RAG: Retrieval-Augmented Generation with hybrid search + RRF
-- Graph: Knowledge graph construction
-- RLM: Recursive Language Model (DeepSeek-V3.1 via SambaNova)
+Full multimodal document analysis pipeline:
+  1. VL:       Qwen3-VL multimodal embeddings (text + images)
+  2. RAG:      Hybrid search (dense + keyword) with RRF fusion
+  3. Reranker:  Qwen3-VL cross-attention reranking
+  4. Graph:    Knowledge graph extraction via RLM
+  5. RLM:      Recursive Language Model with REPL sandbox
+  6. Report:   Markdown report generation
 
 Usage:
-    vrlmrag --samba-nova <file_or_folder>
-    vrlmrag --samba-nova document.pdf --output report.md
-    vrlmrag --samba-nova ./folder --query "Summarize key concepts"
+    vrlmrag --provider sambanova document.pptx
+    vrlmrag --provider nebius document.pdf --output report.md
+    vrlmrag --provider openrouter ./folder --query "Summarize key concepts"
+    vrlmrag --list-providers
+    vrlmrag --version
+
+Short aliases (backward-compatible):
+    vrlmrag --samba-nova document.pptx
+    vrlmrag --nebius document.pptx
 """
+
+__version__ = "0.1.0"
 
 import os
 import sys
@@ -21,6 +31,18 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+
+# Load environment variables from .env file in project root
+from dotenv import load_dotenv
+
+# Find project root (where .env is located)
+project_root = Path(__file__).parent.parent
+env_file = project_root / ".env"
+if env_file.exists():
+    load_dotenv(dotenv_path=env_file)
+else:
+    # Try loading from current directory as fallback
+    load_dotenv()
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -33,7 +55,7 @@ from vl_rag_graph_rlm.rag import (
     MultiFactorReranker,
 )
 
-# Qwen3-VL imports (requires torch, transformers)
+# Qwen3-VL imports (requires torch, transformers>=5.1.0)
 try:
     from vl_rag_graph_rlm.rag.qwen3vl import (
         Qwen3VLEmbeddingProvider,
@@ -278,30 +300,159 @@ class MarkdownReportGenerator:
         return markdown
 
 
-def run_sambanova_analysis(
-    input_path: str, query: Optional[str] = None, output: Optional[str] = None
-):
-    """Run full VL-RAG-Graph-RLM analysis with SambaNova + Qwen3-VL.
+SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "sambanova": {
+        "env_key": "SAMBANOVA_API_KEY",
+        "url": "https://cloud.sambanova.ai",
+        "description": "SambaNova Cloud — DeepSeek-V3.2 (200+ tok/s, 128K context, 200K TPD free)",
+        "context_budget": 8000,
+    },
+    "nebius": {
+        "env_key": "NEBIUS_API_KEY",
+        "url": "https://tokenfactory.nebius.com",
+        "description": "Nebius Token Factory — MiniMax-M2.1 (128K context, no daily limits)",
+        "context_budget": 100000,
+    },
+    "openrouter": {
+        "env_key": "OPENROUTER_API_KEY",
+        "url": "https://openrouter.ai",
+        "description": "OpenRouter — 200+ models, pay-per-token routing",
+        "context_budget": 32000,
+    },
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "url": "https://platform.openai.com",
+        "description": "OpenAI — GPT-4o-mini (128K context)",
+        "context_budget": 32000,
+    },
+    "anthropic": {
+        "env_key": "ANTHROPIC_API_KEY",
+        "url": "https://console.anthropic.com",
+        "description": "Anthropic — Claude 3.5 Haiku (200K context)",
+        "context_budget": 32000,
+    },
+    "gemini": {
+        "env_key": "GOOGLE_API_KEY",
+        "url": "https://makersuite.google.com/app/apikey",
+        "description": "Google Gemini — gemini-1.5-flash (1M context)",
+        "context_budget": 64000,
+    },
+    "groq": {
+        "env_key": "GROQ_API_KEY",
+        "url": "https://console.groq.com",
+        "description": "Groq — Ultra-fast inference (Llama 3.1 70B)",
+        "context_budget": 32000,
+    },
+    "deepseek": {
+        "env_key": "DEEPSEEK_API_KEY",
+        "url": "https://platform.deepseek.com",
+        "description": "DeepSeek — DeepSeek-V3 / R1 reasoning",
+        "context_budget": 32000,
+    },
+    "mistral": {
+        "env_key": "MISTRAL_API_KEY",
+        "url": "https://console.mistral.ai",
+        "description": "Mistral AI — mistral-large-latest (128K context)",
+        "context_budget": 32000,
+    },
+    "fireworks": {
+        "env_key": "FIREWORKS_API_KEY",
+        "url": "https://fireworks.ai",
+        "description": "Fireworks AI — Serverless open-source models",
+        "context_budget": 32000,
+    },
+    "together": {
+        "env_key": "TOGETHER_API_KEY",
+        "url": "https://api.together.ai",
+        "description": "Together AI — Open-source model hosting",
+        "context_budget": 32000,
+    },
+    "zenmux": {
+        "env_key": "ZENMUX_API_KEY",
+        "url": "https://zenmux.ai",
+        "description": "ZenMux — Chinese AI models (ERNIE, GLM, Doubao)",
+        "context_budget": 32000,
+    },
+    "zai": {
+        "env_key": "ZAI_API_KEY",
+        "url": "https://open.bigmodel.cn",
+        "description": "z.ai (Zhipu AI) — GLM-4.7 series",
+        "context_budget": 32000,
+    },
+    "azure_openai": {
+        "env_key": "AZURE_OPENAI_API_KEY",
+        "url": "https://portal.azure.com",
+        "description": "Azure OpenAI — Enterprise GPT deployments",
+        "context_budget": 32000,
+    },
+    "cerebras": {
+        "env_key": "CEREBRAS_API_KEY",
+        "url": "https://cloud.cerebras.ai",
+        "description": "Cerebras — Ultra-fast wafer-scale inference (Llama 4 Scout)",
+        "context_budget": 32000,
+    },
+}
 
-    Pipeline:
-    1. Document intake (PPTX, TXT, MD)
-    2. Qwen3-VL embedding (text + images in unified vector space)
-    3. Hybrid search (dense cosine + keyword + RRF fusion)
-    4. Qwen3-VL reranking (cross-attention relevance scoring)
-    5. Knowledge graph extraction via RLM
-    6. Query answering via RLM with retrieved context
-    7. Markdown report generation
+
+def list_providers() -> None:
+    """Print all supported providers with their status."""
+    print(f"vrlmrag v{__version__} — Supported Providers\n")
+    print(f"{'Provider':<16} {'API Key':<12} {'Description'}")
+    print("-" * 80)
+    for name, info in SUPPORTED_PROVIDERS.items():
+        key_set = "✓ SET" if os.getenv(info["env_key"]) else "✗ unset"
+        print(f"{name:<16} {key_set:<12} {info['description']}")
+    print()
+    print("Set API keys in .env or via environment variables.")
+    print("See .env.example for all configuration options.")
+
+
+def run_analysis(
+    provider: str,
+    input_path: str,
+    query: Optional[str] = None,
+    output: Optional[str] = None,
+    model: Optional[str] = None,
+    max_depth: int = 3,
+    max_iterations: int = 10,
+) -> dict:
+    """Run full VL-RAG-Graph-RLM analysis with any supported provider.
+
+    Pipeline (6 pillars):
+      1. Document intake (PPTX, TXT, MD)
+      2. Qwen3-VL embedding (text + images → unified vector space)
+      3. Hybrid search (dense + keyword + RRF fusion)
+      4. Qwen3-VL reranking (cross-attention relevance scoring)
+      5. Knowledge graph extraction via RLM
+      6. Query answering via RLM with retrieved context → markdown report
     """
-
-    # Check API key
-    api_key = os.getenv("SAMBANOVA_API_KEY")
-    if not api_key:
-        print("Error: SAMBANOVA_API_KEY not set")
-        print("Get your API key from: https://cloud.sambanova.ai")
+    if provider not in SUPPORTED_PROVIDERS:
+        print(f"Error: Unknown provider '{provider}'")
+        print(f"Supported: {', '.join(SUPPORTED_PROVIDERS.keys())}")
         sys.exit(1)
 
+    prov_info = SUPPORTED_PROVIDERS[provider]
+    context_budget = prov_info["context_budget"]
+
+    # Check API key
+    api_key = os.getenv(prov_info["env_key"])
+    if not api_key:
+        print(f"Error: {prov_info['env_key']} not set")
+        print(f"Get your API key from: {prov_info['url']}")
+        sys.exit(1)
+
+    # Resolve model (env var → explicit arg → provider default)
+    resolved_model = model  # explicit --model flag takes priority
+    if not resolved_model:
+        resolved_model = None  # let VLRAGGraphRLM resolve from env/defaults
+
     print("=" * 70)
-    print("VL-RAG-Graph-RLM: SambaNova + Qwen3-VL Full Pipeline")
+    print(f"vrlmrag v{__version__} — Full VL-RAG-Graph-RLM Pipeline")
+    print("=" * 70)
+    print(f"Provider:       {provider}")
+    print(f"Model:          {resolved_model or '(auto-detect from env/defaults)'}")
+    print(f"Context budget: {context_budget:,} chars")
+    print(f"Input:          {input_path}")
     print("=" * 70)
 
     overall_start = time.time()
@@ -316,7 +467,7 @@ def run_sambanova_analysis(
     if isinstance(documents, dict):
         documents = [documents]
 
-    all_chunks = []
+    all_chunks: List[dict] = []
     for doc in documents:
         all_chunks.extend(doc.get("chunks", []))
 
@@ -391,13 +542,13 @@ def run_sambanova_analysis(
         print(f"  Store persisted to: {storage_file}")
 
         # Load reranker
-        print(f"\n[4/6] Loading Qwen3-VL Reranker...")
+        print("\n[4/6] Loading Qwen3-VL Reranker...")
         reranker_vl = create_qwen3vl_reranker(
             model_name=reranker_model_name, device=device
         )
-        print(f"  Reranker loaded successfully")
+        print("  Reranker loaded successfully")
     else:
-        print("\n[2/6] Qwen3-VL not available - using fallback text reranking")
+        print("\n[2/6] Qwen3-VL not available — using fallback text reranking")
         print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
         store = None
         reranker_vl = None
@@ -407,26 +558,30 @@ def run_sambanova_analysis(
     # ================================================================
     # Step 3: Initialize RLM
     # ================================================================
-    print(f"\n[5/6] Initializing RLM (DeepSeek-V3.1 on SambaNova)...")
-    rlm = VLRAGGraphRLM(
-        provider="sambanova",
-        model="DeepSeek-V3.1",
-        temperature=0.0,
-        max_depth=3,
-        max_iterations=10,
-    )
+    rlm_kwargs: Dict[str, Any] = {
+        "provider": provider,
+        "temperature": 0.0,
+        "max_depth": max_depth,
+        "max_iterations": max_iterations,
+    }
+    if resolved_model:
+        rlm_kwargs["model"] = resolved_model
+
+    print(f"\n[5/6] Initializing RLM ({provider})...")
+    rlm = VLRAGGraphRLM(**rlm_kwargs)
+    print(f"  Model: {rlm.model}")
 
     # ================================================================
     # Step 4: Build Knowledge Graph
     # ================================================================
     print("\n  Building knowledge graph...")
-    # SambaNova DeepSeek-V3.1 supports 128K context, but free tier has 200K TPD.
-    # Budget ~8K chars (~2K tokens) per call to conserve daily token budget.
-    kg_context = "\n\n".join([d.get("content", "")[:2000] for d in documents])
+    kg_char_limit = min(context_budget, 25000)
+    kg_doc_limit = max(2000, kg_char_limit // max(len(documents), 1))
+    kg_context = "\n\n".join([d.get("content", "")[:kg_doc_limit] for d in documents])
     try:
         kg_result = rlm.completion(
             "Extract key concepts, entities, and relationships from this document.",
-            kg_context[:8000],
+            kg_context[:kg_char_limit],
         )
         knowledge_graph = kg_result.response
     except Exception as e:
@@ -435,7 +590,7 @@ def run_sambanova_analysis(
     # ================================================================
     # Step 5: Run Queries with Qwen3-VL retrieval
     # ================================================================
-    queries_to_run = []
+    queries_to_run: List[str] = []
     if query:
         queries_to_run = [query]
     else:
@@ -445,7 +600,7 @@ def run_sambanova_analysis(
         ]
 
     print(f"\n[6/6] Running {len(queries_to_run)} queries with RAG retrieval...")
-    query_results = []
+    query_results: List[Dict[str, Any]] = []
     rrf = ReciprocalRankFusion(k=60)
     fallback_reranker = CompositeReranker()
 
@@ -455,29 +610,23 @@ def run_sambanova_analysis(
 
         if store is not None and HAS_QWEN3VL:
             # --- Full Qwen3-VL RAG pipeline ---
-
-            # Dense vector search via Qwen3-VL embeddings
             dense_results = store.search(q, top_k=20)
             print(f"    Dense search: {len(dense_results)} results")
 
-            # Keyword search for hybrid
             keyword_results = _keyword_search(store, q, top_k=20)
             print(f"    Keyword search: {len(keyword_results)} results")
 
-            # RRF Fusion
             if keyword_results:
                 fused_results = rrf.fuse(
                     [dense_results, keyword_results], weights=[4.0, 1.0]
                 )
             else:
                 fused_results = dense_results
-
             print(f"    After RRF fusion: {len(fused_results)} results")
 
-            # Qwen3-VL Reranking
             if reranker_vl and fused_results:
-                docs_for_rerank = []
-                for r in fused_results[:15]:  # Rerank top 15
+                docs_for_rerank: List[Dict[str, Any]] = []
+                for r in fused_results[:15]:
                     doc = store.get(r.id)
                     if doc:
                         doc_dict: Dict[str, Any] = {"text": doc.content}
@@ -488,7 +637,6 @@ def run_sambanova_analysis(
                 reranked_indices = reranker_vl.rerank(
                     query={"text": q}, documents=docs_for_rerank
                 )
-                # Reorder by reranker scores
                 reordered = []
                 for idx, score in reranked_indices:
                     if idx < len(fused_results):
@@ -500,7 +648,6 @@ def run_sambanova_analysis(
             else:
                 final_results = fused_results[:5]
 
-            # Build context from top results
             context_parts = []
             for i, result in enumerate(final_results):
                 doc = store.get(result.id)
@@ -538,10 +685,9 @@ def run_sambanova_analysis(
                 [c.get("content", "") for c in top_chunks]
             )
 
-        # Query RLM with retrieved context
         try:
             q_start = time.time()
-            result = rlm.completion(q, context[:8000])
+            result = rlm.completion(q, context[:context_budget])
             elapsed = time.time() - q_start
 
             query_results.append(
@@ -564,8 +710,8 @@ def run_sambanova_analysis(
     # ================================================================
     total_elapsed = time.time() - overall_start
     results = {
-        "provider": "sambanova",
-        "model": "DeepSeek-V3.1",
+        "provider": provider,
+        "model": rlm.model,
         "embedding_model": embedding_model_name,
         "reranker_model": reranker_model_name,
         "document_count": len(documents),
@@ -588,6 +734,21 @@ def run_sambanova_analysis(
         print("\n" + report)
 
     return results
+
+
+# Backward-compatible aliases
+def run_sambanova_analysis(
+    input_path: str, query: Optional[str] = None, output: Optional[str] = None
+) -> dict:
+    """Backward-compatible alias for run_analysis(provider='sambanova', ...)."""
+    return run_analysis("sambanova", input_path, query=query, output=output)
+
+
+def run_nebius_analysis(
+    input_path: str, query: Optional[str] = None, output: Optional[str] = None
+) -> dict:
+    """Backward-compatible alias for run_analysis(provider='nebius', ...)."""
+    return run_analysis("nebius", input_path, query=query, output=output)
 
 
 def _keyword_search(
@@ -620,31 +781,118 @@ def _keyword_search(
 
 
 def main():
+    provider_names = ", ".join(SUPPORTED_PROVIDERS.keys())
+
     parser = argparse.ArgumentParser(
-        description="VL-RAG-Graph-RLM: Process documents with SambaNova DeepSeek-V3.1 + Qwen3-VL"
+        prog="vrlmrag",
+        description=(
+            "vrlmrag — Full VL-RAG-Graph-RLM document analysis pipeline.\n\n"
+            "Process documents (PPTX, PDF, TXT, MD) through the complete 6-pillar\n"
+            "multimodal pipeline: VL embeddings → RAG → reranking → knowledge graph\n"
+            "→ recursive LLM reasoning → markdown report."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  vrlmrag --provider sambanova presentation.pptx\n"
+            "  vrlmrag --provider nebius document.pdf -o report.md\n"
+            "  vrlmrag --provider openrouter ./docs -q 'Summarize key findings'\n"
+            "  vrlmrag --provider gemini paper.pdf --model gemini-1.5-pro\n"
+            "  vrlmrag --list-providers\n"
+            "\n"
+            "backward-compatible aliases:\n"
+            "  vrlmrag --samba-nova presentation.pptx\n"
+            "  vrlmrag --nebius document.pdf\n"
+            f"\nsupported providers: {provider_names}\n"
+            "\nSet API keys in .env or via environment variables. See .env.example."
+        ),
     )
 
     parser.add_argument(
-        "--samba-nova",
-        metavar="PATH",
-        required=True,
-        help="File or folder to process with SambaNova DeepSeek-V3.1 + Qwen3-VL embeddings",
+        "--version", "-V", action="version", version=f"%(prog)s {__version__}"
     )
 
     parser.add_argument(
-        "--query", "-q", help="Custom query to run (default: auto-generated)"
+        "--list-providers", action="store_true",
+        help="List all supported providers and their API key status",
     )
 
     parser.add_argument(
-        "--output",
-        "-o",
-        help="Output markdown file path (default: print to stdout)",
+        "--provider", "-p",
+        metavar="NAME",
+        help=f"LLM provider to use ({provider_names})",
     )
+
+    parser.add_argument(
+        "input", nargs="?", metavar="PATH",
+        help="File or folder to process (PPTX, PDF, TXT, MD)",
+    )
+
+    parser.add_argument(
+        "--query", "-q",
+        help="Custom query (default: auto-generated summary queries)",
+    )
+
+    parser.add_argument(
+        "--output", "-o",
+        help="Output markdown report path (default: print to stdout)",
+    )
+
+    parser.add_argument(
+        "--model", "-m",
+        help="Override the default model for the chosen provider",
+    )
+
+    parser.add_argument(
+        "--max-depth", type=int, default=3,
+        help="Maximum RLM recursion depth (default: 3)",
+    )
+
+    parser.add_argument(
+        "--max-iterations", type=int, default=10,
+        help="Maximum RLM iterations per call (default: 10)",
+    )
+
+    # Backward-compatible aliases (hidden from main help)
+    parser.add_argument("--samba-nova", metavar="PATH", help=argparse.SUPPRESS)
+    parser.add_argument("--nebius", metavar="PATH", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
-    run_sambanova_analysis(
-        input_path=args.samba_nova, query=args.query, output=args.output
+    # Handle --list-providers
+    if args.list_providers:
+        list_providers()
+        return
+
+    # Resolve provider and input from args (support old-style flags)
+    provider = args.provider
+    input_path = args.input
+
+    if args.samba_nova:
+        provider = "sambanova"
+        input_path = args.samba_nova
+    elif args.nebius and not provider:
+        provider = "nebius"
+        input_path = args.nebius
+
+    if not provider:
+        parser.print_help()
+        print(f"\nError: --provider is required. Use --list-providers to see options.")
+        sys.exit(1)
+
+    if not input_path:
+        parser.print_help()
+        print(f"\nError: input PATH is required.")
+        sys.exit(1)
+
+    run_analysis(
+        provider=provider,
+        input_path=input_path,
+        query=args.query,
+        output=args.output,
+        model=args.model,
+        max_depth=args.max_depth,
+        max_iterations=args.max_iterations,
     )
 
 

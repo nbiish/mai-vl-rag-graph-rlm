@@ -45,6 +45,7 @@ from vl_rag_graph_rlm.clients import (
     FireworksClient,
     TogetherClient,
     DeepSeekClient,
+    CerebrasClient,
 )
 from vl_rag_graph_rlm.types import (
     VLRAGGraphRLMChatCompletion,
@@ -91,6 +92,7 @@ __all__ = [
     "FireworksClient",
     "TogetherClient",
     "DeepSeekClient",
+    "CerebrasClient",
     # Types
     "VLRAGGraphRLMChatCompletion",
     "REPLResult",
