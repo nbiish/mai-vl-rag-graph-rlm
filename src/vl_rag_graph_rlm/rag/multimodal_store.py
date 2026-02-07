@@ -12,7 +12,14 @@ from pathlib import Path
 
 from vl_rag_graph_rlm.rag import SearchResult
 from vl_rag_graph_rlm.rag.store import SimpleVectorStore, Document
-from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLEmbeddingProvider, MultimodalDocument
+
+try:
+    from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLEmbeddingProvider, MultimodalDocument
+    HAS_QWEN3VL = True
+except ImportError:
+    HAS_QWEN3VL = False
+    Qwen3VLEmbeddingProvider = None  # type: ignore
+    MultimodalDocument = None  # type: ignore
 
 logger = logging.getLogger("rlm.rag.multimodal_store")
 

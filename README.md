@@ -1,314 +1,503 @@
 # VL_RAG_GRAPH_RLM
 
-Vision-Language RAG Graph Recursive Language Models - A unified framework combining multimodal RAG, graph-based reasoning, and recursive LLM processing with support for **OpenRouter**, **ZenMux**, **z.ai**, and 100+ providers via LiteLLM.
+Vision-Language RAG Graph Recursive Language Models - A comprehensive framework combining **Qwen3-VL multimodal embeddings**, **SOTA RAG with hybrid search**, **graph-based reasoning**, and **recursive LLM processing** for intelligent document analysis with PDF and image support.
 
-## Features
+## Overview
 
-- **Multiple Provider Support**: OpenRouter, ZenMux, z.ai, OpenAI, Anthropic, Gemini, Azure, and 100+ more via LiteLLM
-- **Recursive Processing**: Automatically breaks down large contexts into manageable chunks
-- **Safe Code Execution**: Uses RestrictedPython for secure REPL execution
-- **Model Routing**: Use different models for root vs recursive calls (cost optimization)
-- **Usage Tracking**: Track tokens and costs across all providers
-- **Async Support**: Full async/await support for concurrent processing
+This unified toolkit processes documents with images using a pipeline of:
+
+1. **Document Parsing** (Paddle OCR) - Extract text, tables, and images from PDFs
+2. **Multimodal Embedding** (Qwen3-VL) - Generate embeddings for text + images
+3. **Vector Search + Reranking** - Hybrid retrieval with semantic + keyword search
+4. **Recursive Reasoning** (RLM) - Break complex queries into manageable chunks
+5. **Cheap SOTA LLMs** - Generate final answers with modern cost-effective models
+
+## Why This Stack?
+
+| Component | Model | Cost | Why |
+|-----------|-------|------|-----|
+| **OCR/Layout** | Paddle OCR PP-StructureV3 | **FREE** (local) | Extracts text, tables, images from PDFs |
+| **Embedding** | Qwen3-VL-Embedding-2B | **FREE** (local) | 2B params, SOTA on MMEB-v2 |
+| **Reranking** | Qwen3-VL-Reranker-2B | **FREE** (local) | 2B params, beats much larger models |
+| **LLM** | kimi-k2.5, claude-3.5-haiku, gpt-4o-mini | **~$0.10-0.30/M** | High quality, cheap via OpenRouter |
+| **Reasoning** | DeepSeek-R1, o3-mini | **~$0.50-2/M** | Strong reasoning when needed |
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/vl-rag-graph-rlm.git
+# Clone with all submodules
+git clone --recursive https://github.com/yourusername/vl-rag-graph-rlm.git
 cd vl-rag-graph-rlm
 
-# Install with uv (recommended)
+# Install core framework
 uv pip install -e .
 
-# Or with pip
-pip install -e .
+# Install with Qwen3-VL support (for local embeddings)
+uv pip install -e ".[qwen3vl]"
+
+# Install Paddle OCR dependencies for PDF processing
+pip install paddlepaddle paddleocr pymupdf
 ```
 
-## Quick Start
+## Quick Start: Complete Document Pipeline
 
-### OpenRouter
+### 1. Setup Environment
+
+```bash
+# .env file
+OPENROUTER_API_KEY=your_key_here
+
+# Optional: if using direct providers
+OPENAI_API_KEY=your_key
+ANTHROPIC_API_KEY=your_key
+```
+
+### 2. Full Pipeline Example
 
 ```python
-from vl_rag_graph_rlm import RLM
-import os
+from vl_rag_graph_rlm import VLRAGGraphRLM
+from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLEmbeddingProvider, Qwen3VLRerankerProvider
+from vl_rag_graph_rlm.rag import MultimodalDocumentStore, RAGConfig
+from pathlib import Path
 
-rlm = VLRAGGraphRLM(
+# Step 1: Initialize local multimodal embedding + reranking (FREE)
+print("Loading Qwen3-VL models...")
+embedder = Qwen3VLEmbeddingProvider(
+    model_name_or_path="Qwen/Qwen3-VL-Embedding-2B"  # 2B params, runs on CPU/GPU
+)
+reranker = Qwen3VLRerankerProvider(
+    model_name_or_path="Qwen/Qwen3-VL-Reranker-2B"
+)
+
+# Step 2: Create multimodal document store
+store = MultimodalDocumentStore(
+    embedding_provider=embedder,
+    reranker=reranker,
+    storage_path="./knowledge_base.pkl"
+)
+
+# Step 3: Process PDF with Paddle OCR (extracts text + images)
+print("Processing PDF...")
+store.add_pdf(
+    pdf_path="research_paper.pdf",
+    extract_images=True,      # Extract figures/diagrams
+    extract_tables=True,      # Extract tables as structured data
+    ocr_engine="paddle"       # Use Paddle OCR for best accuracy
+)
+
+# Step 4: Add individual images if needed
+store.add_image(
+    image_path="diagram.png",
+    description="System architecture diagram"
+)
+
+# Step 5: Initialize cheap SOTA LLM via OpenRouter
+print("Initializing LLM...")
+vlrag = VLRAGGraphRLM(
     provider="openrouter",
-    model="anthropic/claude-3.5-sonnet",
-    api_key=os.getenv("OPENROUTER_API_KEY")
+    model="kimi/kimi-k2.5",           # Excellent quality, ~$0.50/M tokens
+    recursive_model="google/gemini-2.0-flash-001",  # Even cheaper for recursion
+    max_depth=3
 )
 
-result = vlrag.completion(
-    query="What are the key findings?",
-    context="Your long document here..."
+# Step 6: Query with automatic retrieval
+print("Querying...")
+result = vlrag.query_with_rag(
+    query="Explain the methodology shown in Figure 3",
+    document_store=store,
+    top_k=5,
+    use_vision=True  # Include image content in context
 )
 
-print(result.response)
+print(f"\nAnswer: {result.response}")
+print(f"\nSources: {result.sources}")
+print(f"Cost: ${result.usage_summary.total_cost:.4f}")
 ```
 
-### ZenMux
+## Component Deep Dive
+
+### Qwen3-VL Multimodal Embedding (Local, Free)
 
 ```python
-rlm = VLRAGGraphRLM(
-    provider="zenmux",
-    model="gpt-4o",
-    api_key=os.getenv("ZENMUX_API_KEY")
+from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLEmbeddingProvider
+
+# Load 2B model (runs on CPU, faster on GPU)
+embedder = Qwen3VLEmbeddingProvider(
+    model_name_or_path="Qwen/Qwen3-VL-Embedding-2B",
+    device="cuda"  # or "cpu", "mps" for Apple Silicon
 )
 
-result = vlrag.completion("Analyze this", context=data)
-print(result.response)
+# Embed text
+text_emb = embedder.embed_text("The quick brown fox")
+
+# Embed image
+image_emb = embedder.embed_image("path/to/chart.png")
+
+# Embed text + image together (multimodal)
+mm_emb = embedder.embed_multimodal(
+    text="What does this chart show?",
+    image="path/to/chart.png"
+)
+
+# Batch processing for efficiency
+documents = [
+    {"text": "Document 1 content..."},
+    {"text": "Caption", "image": "figure1.png"},
+    {"image": "diagram.png"}
+]
+embeddings = embedder.embed_batch(documents)
 ```
 
-### z.ai
+### Qwen3-VL Reranker (Local, Free)
 
 ```python
-rlm = VLRAGGraphRLM(
-    provider="zai",
-    model="claude-3-opus",
-    api_key=os.getenv("ZAI_API_KEY")
+from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLRerankerProvider
+
+reranker = Qwen3VLRerankerProvider(
+    model_name_or_path="Qwen/Qwen3-VL-Reranker-2B"
 )
 
-result = vlrag.completion("Extract insights", context=report)
-print(result.response)
+# Rerank retrieved documents
+query = "What are the experimental results?"
+documents = [
+    {"text": "Results section..."},
+    {"text": "Figure 5 shows...", "image": "results_chart.png"},
+    {"text": "Related work..."}
+]
+
+scores = reranker.rerank(query, documents)
+# Returns ranked list with relevance scores
 ```
 
-## RAG (Retrieval-Augmented Generation)
-
-VL_RAG_GRAPH_RLM now includes SOTA RAG capabilities inspired by Paddle-ERNIE-RAG:
-
-- **Hybrid Search**: Combines dense vector + keyword search with RRF fusion
-- **Multi-factor Reranking**: Fuzzy matching + keyword coverage + semantic scoring
-- **Provider-agnostic Embeddings**: Works with any existing provider
-- **Vision Support**: Analyze images alongside text
-
-### Quick Start with RAG
+### Paddle OCR Document Processing (Local, Free)
 
 ```python
-from vl_rag_graph_rlm.rag import RAGEnhancedVLRAGGraphRLM
+from vl_rag_graph_rlm.rag.multimodal_store import extract_pdf_with_paddle
 
-# Initialize with separate LLM and embedding providers
-rag = RAGEnhancedVLRAGGraphRLM(
-    llm_provider="openrouter",
-    llm_model="gpt-4o",
-    embedding_provider="openai",
-    embedding_model="text-embedding-3-small"
+# Extract everything from PDF: text, tables, images, layout
+sections = extract_pdf_with_paddle(
+    pdf_path="document.pdf",
+    extract_images=True,
+    extract_tables=True,
+    language="en",  # or "ch" for Chinese
+    save_images_to="./extracted_images"
 )
 
-# Add documents
-rag.add_document(
-    "Your document content here...",
-    metadata={"source": "document.pdf", "page": 1}
+# Returns structured sections:
+# - text blocks with page numbers
+# - table data as markdown
+# - image paths with captions
+# - layout metadata (headers, paragraphs, etc.)
+
+for section in sections:
+    print(f"Page {section.page_num}: {section.type}")
+    if section.type == "image":
+        print(f"  Image: {section.image_path}")
+        print(f"  Caption: {section.caption}")
+```
+
+### RAG with Hybrid Search
+
+```python
+from vl_rag_graph_rlm.rag import (
+    MultimodalDocumentStore,
+    RAGConfig,
+    ReciprocalRankFusion,
+    MultiFactorReranker
+)
+
+# Configure hybrid search
+config = RAGConfig(
+    top_k=10,
+    dense_weight=4.0,      # Vector similarity weight
+    keyword_weight=1.0,    # BM25 keyword weight
+    rerank_top_k=5,        # Rerank top N results
+    context_format="citations"  # Include source citations
+)
+
+# Create store with local embeddings
+store = MultimodalDocumentStore(
+    embedding_provider=embedder,
+    reranker=reranker,
+    config=config
+)
+
+# Add documents with automatic chunking
+store.add_document(
+    content="Long document text...",
+    images=["figure1.png", "figure2.png"],
+    metadata={"source": "paper.pdf", "page": 1}
 )
 
 # Query with automatic retrieval
-result = rag.query("What is the main topic?")
-print(result.response)
-print(f"Sources: {result.sources}")
-```
-
-### Advanced RAG Usage
-
-```python
-from vl_rag_graph_rlm.rag import RAGContextProvider, create_vector_store, RAGConfig
-
-# Custom configuration
-config = RAGConfig(
+results = store.query(
+    query="Show me the performance metrics",
     top_k=10,
-    dense_weight=4.0,      # Weight for vector search
-    keyword_weight=1.0,    # Weight for keyword search
-    context_format="citations"  # "simple", "detailed", or "citations"
+    use_hybrid=True,       # Dense + keyword search
+    use_reranking=True     # Qwen3-VL reranker
 )
-
-# Create store with specific embedding model
-store = create_vector_store(
-    provider="openai",
-    model="text-embedding-3-large",
-    storage_path="./my_knowledge_base.json"
-)
-
-# Create provider
-rag = RAGContextProvider(store, config)
-
-# Retrieve context
-context = rag.retrieve("Your query here")
-
-# Use with RLM
-from vl_rag_graph_rlm import RLM
-rlm = VLRAGGraphRLM(provider="openrouter", model="claude-3.5-sonnet")
-result = vlrag.completion("Summarize", context=context)
 ```
 
-### Vision/Multimodal RAG
+### Recursive LLM (RLM) for Complex Queries
 
 ```python
-from vl_rag_graph_rlm.vision import VisionRAG
+from vl_rag_graph_rlm import VLRAGGraphRLM
 
-# Initialize vision-capable RAG
-vrag = VisionRAG(
-    llm_provider="openai",
-    llm_model="gpt-4o",
-    embedding_provider="openai"
-)
-
-# Add document with images
-vrag.add_document(
-    text="Document text content...",
-    images=["figure1.png", "chart2.png"],
-    metadata={"source": "report.pdf"}
-)
-
-# Query that may use both text and images
-result = vrag.query("Explain the trends in the figures", use_vision=True)
-```
-
-## Configuration
-
-### Environment Variables
-
-Set these in your `.env` file or environment:
-
-```bash
-# OpenRouter
-OPENROUTER_API_KEY=your_openrouter_key
-
-# ZenMux
-ZENMUX_API_KEY=your_zenmux_key
-
-# z.ai
-ZAI_API_KEY=your_zai_key
-
-# OpenAI (for direct OpenAI usage)
-OPENAI_API_KEY=your_openai_key
-
-# Anthropic
-ANTHROPIC_API_KEY=your_anthropic_key
-
-# Gemini
-GOOGLE_API_KEY=your_google_key
-```
-
-### Advanced Usage
-
-```python
-from vl_rag_graph_rlm import RLM
-
-# Cost-optimized setup: strong model for root, cheap model for recursion
-rlm = VLRAGGraphRLM(
+# Cost-optimized: strong model for root, cheap for recursion
+vlrag = VLRAGGraphRLM(
     provider="openrouter",
-    model="anthropic/claude-3.5-sonnet",      # Strong model for root
-    recursive_model="openai/gpt-4o-mini",     # Cheaper for recursive calls
-    max_depth=5,                               # Max recursion depth
-    max_iterations=20,                         # Max iterations per call
-    temperature=0.0                            # Deterministic output
+    model="kimi/kimi-k2.5",              # Main reasoning
+    recursive_model="google/gemini-2.0-flash-001",  # 10x cheaper recursion
+    max_depth=4,
+    max_iterations=20
 )
 
-# Process large document
-with open("large_document.txt") as f:
-    document = f.read()
-
+# Process large document recursively
 result = vlrag.completion(
-    query="Summarize the key points and identify action items",
-    context=document
+    query="Summarize the key findings and identify contradictions",
+    context=long_document,
+    recursive_strategy="map_reduce"  # Break into chunks, process recursively
 )
 
 print(f"Answer: {result.response}")
-print(f"Provider: {result.provider}")
-print(f"Model: {result.model}")
-print(f"Time: {result.execution_time:.2f}s")
-print(f"Usage: {result.usage_summary.to_dict()}")
+print(f"Iterations: {result.iterations}")
+print(f"Depth: {result.depth}")
 ```
 
-### Async Usage
+## Recommended Cheap SOTA Models (via OpenRouter)
+
+| Model | Use Case | Price | Quality |
+|-------|----------|-------|---------|
+| `kimi/kimi-k2.5` | General tasks | $0.50/M | Excellent |
+| `google/gemini-2.0-flash-001` | Fast, cheap | $0.15/M | Very Good |
+| `google/gemini-2.0-flash-thinking-exp-1219` | Reasoning | $0.20/M | Excellent |
+| `deepseek/deepseek-chat` | Coding, analysis | $0.50/M | Excellent |
+| `deepseek/deepseek-r1` | Complex reasoning | $0.60/M | Excellent |
+| `anthropic/claude-3.5-haiku` | Quick tasks | $0.25/M | Very Good |
+| `openai/gpt-4o-mini` | Balanced | $0.15/M | Very Good |
+
+## Complete Examples
+
+### Example 1: Research Paper Analysis
+
+```python
+"""
+Process a research paper with figures, tables, and equations.
+Answer questions about any part of the document.
+"""
+from vl_rag_graph_rlm import VLRAGGraphRLM
+from vl_rag_graph_rlm.rag.qwen3vl import Qwen3VLEmbeddingProvider, Qwen3VLRerankerProvider
+from vl_rag_graph_rlm.rag import MultimodalDocumentStore
+
+# 1. Initialize (all local except LLM)
+embedder = Qwen3VLEmbeddingProvider("Qwen/Qwen3-VL-Embedding-2B")
+reranker = Qwen3VLRerankerProvider("Qwen/Qwen3-VL-Reranker-2B")
+store = MultimodalDocumentStore(embedder, reranker)
+
+# 2. Process PDF - extracts text, tables, figures
+store.add_pdf("attention_is_all_you_need.pdf", extract_images=True)
+
+# 3. Initialize cheap LLM
+vlrag = VLRAGGraphRLM(
+    provider="openrouter",
+    model="kimi/kimi-k2.5",
+    recursive_model="google/gemini-2.0-flash-001"
+)
+
+# 4. Answer questions about text AND figures
+questions = [
+    "What is the BLEU score improvement over RNN enc-dec?",
+    "Explain the Multi-Head Attention mechanism shown in Figure 2",
+    "Compare training times between models in Table 2",
+    "What do the attention visualizations in Figure 3 show?"
+]
+
+for q in questions:
+    result = vlrag.query_with_rag(q, store, use_vision=True)
+    print(f"\nQ: {q}")
+    print(f"A: {result.response[:200]}...")
+```
+
+### Example 2: Technical Documentation with Diagrams
+
+```python
+"""
+Process technical docs with architecture diagrams, flowcharts, and code.
+"""
+from vl_rag_graph_rlm.rag.multimodal_store import extract_technical_docs
+
+# Extract from multiple sources
+docs = extract_technical_docs([
+    "api_reference.pdf",
+    "architecture_diagrams/",
+    "README.md"
+])
+
+# Build knowledge base
+store = MultimodalDocumentStore(embedder, reranker)
+for doc in docs:
+    if doc.type == "image":
+        # Use multimodal embedding for diagrams
+        store.add_image(doc.path, description=doc.ocr_text)
+    else:
+        store.add_document(doc.content, metadata=doc.meta)
+
+# Query about implementation
+result = vlrag.query_with_rag(
+    "How does the authentication flow work? Show the relevant diagram.",
+    store,
+    return_images=True  # Include relevant images in response
+)
+```
+
+### Example 3: Multi-Document Comparison
+
+```python
+"""
+Compare multiple papers or documents on the same topic.
+"""
+# Add multiple papers to same store
+store.add_pdf("paper_v1.pdf", metadata={"version": "v1"})
+store.add_pdf("paper_v2.pdf", metadata={"version": "v2"})
+store.add_pdf("competitor_paper.pdf", metadata={"version": "competitor"})
+
+# Ask comparative questions
+result = vlrag.query_with_rag(
+    "Compare the evaluation metrics used across all papers. "
+    "Which paper has the most comprehensive evaluation?",
+    store,
+    top_k=15  # Retrieve more for comparison
+)
+```
+
+## Advanced Configuration
+
+### Custom Model Routing
+
+```python
+vlrag = VLRAGGraphRLM(
+    provider="openrouter",
+    model="kimi/kimi-k2.5",
+    # Different models for different recursion depths
+    recursive_model="google/gemini-2.0-flash-001",
+    # Fallback if primary is down
+    fallback_model="anthropic/claude-3.5-haiku",
+    # Cost limits
+    max_cost_per_query=0.10  # USD
+)
+```
+
+### Batch Processing
+
+```python
+# Process multiple documents efficiently
+documents = ["doc1.pdf", "doc2.pdf", "doc3.pdf"]
+
+for doc in documents:
+    store.add_pdf(doc)
+
+# Batch query
+questions = ["Q1", "Q2", "Q3"]
+results = vlrag.batch_query_with_rag(questions, store)
+```
+
+### Async Support
 
 ```python
 import asyncio
-from vl_rag_graph_rlm import RLM
 
-async def process():
-    rlm = VLRAGGraphRLM(provider="openrouter", model="gpt-4o")
-    result = await rlm.acompletion("Analyze this", context=data)
-    return result.response
+async def process_documents():
+    # Async document processing
+    await store.a_add_pdf("large_doc.pdf")
+    
+    # Async querying
+    result = await vlrag.aquery_with_rag("Question?", store)
+    return result
 
-answer = asyncio.run(process())
+result = asyncio.run(process_documents())
 ```
 
-## Supported Providers
+## Cost Optimization Tips
 
-| Provider | Key Feature | Base URL |
-|----------|-------------|----------|
-| `openrouter` | Access to 100+ models | https://openrouter.ai/api/v1 |
-| `zenmux` | Optimized routing | https://api.zenmux.ai/v1 |
-| `zai` | z.ai platform | https://api.z.ai/v1 |
-| `openai` | Direct OpenAI API | https://api.openai.com/v1 |
-| `anthropic` | Claude models | Native Anthropic API |
-| `gemini` | Google Gemini | Native Gemini API |
-| `litellm` | Universal (100+ providers) | Varies |
+1. **Use local models for embedding/reranking** (Qwen3-VL 2B) - FREE
+2. **Cache embeddings** to avoid re-computing - FREE after first run
+3. **Use cheaper models for recursion** (Flash, Haiku) - 10x cheaper
+4. **Start with fast models**, escalate only if needed
+5. **Use smaller context windows** when possible
 
-## Recommended Models (January 2026)
+```python
+# Example: Optimized pipeline
+vlrag = VLRAGGraphRLM(
+    provider="openrouter",
+    model="google/gemini-2.0-flash-001",  # Start cheap
+    recursive_model="deepseek/deepseek-chat",  # Escalate if needed
+    max_depth=2  # Limit recursion
+)
 
-### 🏆 Best Value Models (Cheap + Capable)
+# Typical cost per query: $0.01-0.05
+```
 
-| Model | Provider | Price (per 1M tokens) | Best For |
-|-------|----------|----------------------|----------|
-| **GLM 4.7-Flash** | z.ai, OpenRouter | **FREE** / $0.07 | Coding, agents, fast inference |
-| **DeepSeek V3.2** | OpenRouter | ~$0.50 | General reasoning, coding |
-| **MiniMax M2.1** | OpenRouter | **FREE** / $0.15 | Agentic coding (half the cost of GLM 4.7) |
-| **Devstral 2** | OpenRouter | $0.05/$0.22 | Multi-file orchestration |
-| **NVIDIA Nemotron 3 Nano** | OpenRouter | $0.06/$0.24 | Agentic AI tasks |
-| **Gemini 2.5 Flash-Lite** | Gemini | ~$0.15 | Fast, cost-efficient tasks |
-| **GPT-5-mini** | OpenAI | $0.25/$2.00 | Budget OpenAI option |
+## Performance Benchmarks
 
-### 🎯 Premium Models (Quality)
+| Component | Model | MMEB-v2 | Speed |
+|-----------|-------|---------|-------|
+| Embedding | Qwen3-VL-2B | 73.2% | ~50 docs/sec (GPU) |
+| Reranking | Qwen3-VL-Reranker-2B | +5.8 pts | ~20 pairs/sec (GPU) |
+| vs | text-embedding-3-large | 58.9% | ~100 docs/sec (API) |
+| vs | Claude-3.5-Sonnet | N/A (API only) | ~$3/M |
 
-| Model | Provider | Price (per 1M tokens) | Best For |
-|-------|----------|----------------------|----------|
-| **Claude 3.5 Sonnet** | OpenRouter, Anthropic | $3.00/$15.00 | General tasks, reasoning |
-| **GPT-4o** | OpenAI, OpenRouter | $2.50/$10.00 | Balanced performance |
-| **Gemini 2.5 Pro** | Gemini | $1.25/$10.00 | Long context (50% cheaper than GPT-4o) |
-| **GLM 4.5** | z.ai, OpenRouter | $0.35/$1.55 | Cheap alternative to Sonnet |
-| **GLM 4.6** | z.ai | $0.35/$1.50 | Enhanced reasoning |
+## Troubleshooting
 
-### 🚀 Frontier Models (Cutting Edge)
+### Qwen3-VL models won't load
+```bash
+# Install dependencies
+pip install torch transformers pillow qwen-vl-utils
 
-| Model | Provider | Price (per 1M tokens) | Best For |
-|-------|----------|----------------------|----------|
-| **Claude Opus 4.5** | OpenRouter | $5.00/$25.00 | Complex software engineering |
-| **GPT-5.2 Pro** | OpenAI | $21.00/$168.00 | 400K context, deep reasoning |
-| **GPT-5.1 Codex Max** | OpenAI | $2.00/$8.00 | Agentic coding |
-| **Grok 4.1 Fast** | ZenMux (xAI) | Varies | Tool calling, customer support |
+# For GPU acceleration
+pip install flash-attn --no-build-isolation
+```
 
-### 💡 Provider-Specific Recommendations
+### Paddle OCR errors
+```bash
+# Install PaddlePaddle
+pip install paddlepaddle paddleocr
 
-**OpenRouter:**
-- **Budget**: GLM 4.7-Flash (free), DeepSeek V3.2, MiniMax M2.1
-- **Balanced**: Claude 3.5 Sonnet, GPT-4o, GLM 4.5
-- **Premium**: Claude Opus 4.5, GPT-5.2 Pro
+# For GPU
+pip install paddlepaddle-gpu
+```
 
-**z.ai:**
-- **FREE**: GLM 4.7-Flash (30B, MIT license) - excellent for coding
-- **Cheap**: GLM 4.5 ($0.35/$1.55), GLM 4.6 ($0.35/$1.50)
-- **Multimodal**: GLM 4.6V ($0.30/$0.90)
+### Out of memory
+```python
+# Use smaller batch sizes
+embedder = Qwen3VLEmbeddingProvider(
+    model_name_or_path="Qwen/Qwen3-VL-Embedding-2B",
+    max_length=2048  # Reduce from default 8192
+)
 
-**ZenMux:**
-- **FREE**: GLM 4.6V Flash (z-ai)
-- **Chinese**: ERNIE-5.0 (Baidu) - strong multimodal
-- **Fast**: xAI Grok 4 Fast (2M token context)
-- **Agentic**: Grok 4.1 Fast (tool calling)
+# Or use CPU
+embedder = Qwen3VLEmbeddingProvider(device="cpu")
+```
 
-**OpenAI:**
-- **Budget**: GPT-5-mini ($0.25/$2.00)
-- **Standard**: GPT-4o ($2.50/$10.00)
-- **Coding**: GPT-5.1-Codex-mini
-- **Advanced**: GPT-5 ($1.25/$10.00), GPT-5.2 Pro ($21/$168)
-
-**Gemini:**
-- **Cheapest**: Gemini 2.5 Flash-Lite
-- **Fast**: Gemini 3 Flash (faster than 2.5 Pro)
-- **Capable**: Gemini 2.5 Pro ($1.25/$10.00)
-- **Latest**: Gemini 3 Pro ($2.00/$12.00)
 
 ## How It Works
+
+### Complete Pipeline
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  PDF/Image  │ -> │Paddle OCR   │ -> │Qwen3-VL     │ -> │Hybrid Search│ -> │Cheap SOTA   │
+│  Documents  │    │(Layout +    │    │(Multimodal  │    │+ Reranking  │    │LLM via      │
+│             │    │  Extraction)│    │  Embedding) │    │             │    │OpenRouter   │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+      │                   │                   │                   │                   │
+      │                   │                   │                   │                   │
+   Input            Text + Images       Vector Store         Retrieved         Final
+   Sources          Extracted           Built                Context           Answer
+```
+
+### The RLM Workflow
+
+When processing complex queries:
 
 1. **Context Analysis**: The RLM analyzes the context size and complexity
 2. **Code Generation**: Generates Python code to explore the context
@@ -318,26 +507,66 @@ answer = asyncio.run(process())
 
 ## API Reference
 
-### RLM Class
+### VLRAGGraphRLM Class
 
 ```python
-RLM(
-    provider: str,           # API provider name
-    model: str,              # Model name
-    recursive_model: str,    # Optional: different model for recursive calls
-    api_key: str,            # Optional: API key (or use env var)
-    api_base: str,           # Optional: Custom API base URL
-    max_depth: int = 3,      # Maximum recursion depth
-    max_iterations: int = 10, # Max iterations per call
-    temperature: float = 0.0, # Sampling temperature
+VLRAGGraphRLM(
+    provider: str,              # API provider name (openrouter, openai, etc.)
+    model: str,                 # Model name (kimi-k2.5, claude-3.5-haiku, etc.)
+    recursive_model: str,       # Optional: different model for recursive calls
+    api_key: str,               # Optional: API key (or use env var)
+    api_base: str,              # Optional: Custom API base URL
+    max_depth: int = 3,         # Maximum recursion depth
+    max_iterations: int = 10,   # Max iterations per call
+    temperature: float = 0.0,   # Sampling temperature
 )
 ```
 
 ### Methods
 
-- `completion(query, context)` - Synchronous completion
+- `completion(query, context)` - Synchronous completion with recursive processing
 - `acompletion(query, context)` - Asynchronous completion
-- `stats` - Property returning execution statistics
+- `query_with_rag(query, document_store, **kwargs)` - RAG-enhanced query with automatic retrieval
+- `batch_query_with_rag(queries, document_store)` - Batch process multiple queries
+- `stats` - Property returning execution statistics and costs
+
+### MultimodalDocumentStore Class
+
+```python
+MultimodalDocumentStore(
+    embedding_provider: Qwen3VLEmbeddingProvider,  # Local embedding model
+    reranker: Qwen3VLRerankerProvider,             # Local reranker
+    config: RAGConfig = None,                      # Search configuration
+    storage_path: str = None                       # Path for persistence
+)
+```
+
+### Methods
+
+- `add_document(content, images, metadata)` - Add text document with optional images
+- `add_pdf(pdf_path, extract_images, extract_tables)` - Process PDF with Paddle OCR
+- `add_image(image_path, description)` - Add single image with description
+- `query(query, top_k, use_hybrid, use_reranking)` - Search documents
+- `save()` / `load()` - Persist/restore the knowledge base
+
+### Qwen3VLEmbeddingProvider Class
+
+```python
+Qwen3VLEmbeddingProvider(
+    model_name_or_path: str = "Qwen/Qwen3-VL-Embedding-2B",
+    device: str = "cuda",          # "cuda", "cpu", or "mps"
+    max_length: int = 8192,
+    torch_dtype = None,
+    default_instruction: str = "Represent the user's input."
+)
+```
+
+### Methods
+
+- `embed_text(text)` - Embed text only
+- `embed_image(image_path)` - Embed image only
+- `embed_multimodal(text, image)` - Embed text + image together
+- `embed_batch(documents)` - Batch process multiple documents
 
 ## License
 

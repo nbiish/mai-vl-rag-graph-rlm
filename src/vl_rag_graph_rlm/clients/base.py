@@ -22,7 +22,7 @@ class BaseLM(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
         """Make an asynchronous completion call."""
         raise NotImplementedError
 

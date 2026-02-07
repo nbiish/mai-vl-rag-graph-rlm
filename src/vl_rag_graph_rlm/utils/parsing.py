@@ -1,7 +1,7 @@
 """Utility functions for parsing LLM responses."""
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 
 def find_code_blocks(text: str) -> list[str]:

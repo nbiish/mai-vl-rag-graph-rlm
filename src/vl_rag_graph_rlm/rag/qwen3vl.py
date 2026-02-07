@@ -9,15 +9,11 @@ import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass
 from pathlib import Path
-import numpy as np
 
-try:
-    import torch
-    import torch.nn.functional as F
-    from PIL import Image
-    HAS_QWEN_DEPS = True
-except ImportError:
-    HAS_QWEN_DEPS = False
+import numpy as np
+import torch
+import torch.nn.functional as F
+from PIL import Image
 
 from vl_rag_graph_rlm.rag import SearchResult
 
@@ -69,12 +65,6 @@ class Qwen3VLEmbeddingProvider:
         attn_implementation: Optional[str] = None,
         default_instruction: str = "Represent the user's input."
     ):
-        if not HAS_QWEN_DEPS:
-            raise ImportError(
-                "Qwen3-VL dependencies not installed. "
-                "Install with: pip install torch transformers pillow qwen-vl-utils"
-            )
-        
         self.model_name_or_path = model_name_or_path
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.max_length = max_length
@@ -126,7 +116,17 @@ class Qwen3VLEmbeddingProvider:
         self.model.eval()
         
         # Get embedding dimension from model config
-        self.embedding_dim = self.model.config.hidden_size
+        # transformers 5.x moved hidden_size under text_config for VL models
+        config = self.model.config
+        if hasattr(config, 'hidden_size'):
+            self.embedding_dim = config.hidden_size
+        elif hasattr(config, 'text_config') and hasattr(config.text_config, 'hidden_size'):
+            self.embedding_dim = config.text_config.hidden_size
+        else:
+            raise AttributeError(
+                f"Cannot determine embedding dimension from model config: "
+                f"{type(config).__name__} has neither 'hidden_size' nor 'text_config.hidden_size'"
+            )
         
         logger.info(f"Model loaded. Embedding dimension: {self.embedding_dim}")
     
@@ -387,12 +387,6 @@ class Qwen3VLRerankerProvider:
         attn_implementation: Optional[str] = None,
         default_instruction: str = "Given a search query, retrieve relevant candidates that answer the query."
     ):
-        if not HAS_QWEN_DEPS:
-            raise ImportError(
-                "Qwen3-VL dependencies not installed. "
-                "Install with: pip install torch transformers pillow qwen-vl-utils"
-            )
-        
         self.model_name_or_path = model_name_or_path
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.max_length = max_length

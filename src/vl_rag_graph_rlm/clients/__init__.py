@@ -2,13 +2,22 @@
 
 from typing import Any
 
-from vl_rag_graph_rlm.clients.anthropic import AnthropicClient
+from vl_rag_graph_rlm.clients.anthropic import AnthropicClient, AnthropicCompatibleClient
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.clients.gemini import GeminiClient
 from vl_rag_graph_rlm.clients.litellm import LiteLLMClient
 from vl_rag_graph_rlm.clients.openai_compatible import (
+    AzureOpenAIClient,
+    DeepSeekClient,
+    FireworksClient,
+    GenericOpenAIClient,
+    GroqClient,
+    MistralClient,
+    NebiusClient,
     OpenAIClient,
     OpenRouterClient,
+    SambaNovaClient,
+    TogetherClient,
     ZenMuxClient,
     ZaiClient,
 )
@@ -20,38 +29,72 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
     Factory function to create LM clients by provider name.
 
     Args:
-        provider: Provider name ('openai', 'openrouter', 'zenmux', 'zai', 'anthropic', 'gemini', 'litellm')
+        provider: Provider name (see examples below)
         **kwargs: Provider-specific arguments (api_key, model_name, etc.)
 
     Returns:
         BaseLM instance
 
     Examples:
-        >>> # OpenRouter
-        >>> client = get_client('openrouter', api_key='...', model_name='anthropic/claude-3.5-sonnet')
-
-        >>> # ZenMux
-        >>> client = get_client('zenmux', api_key='...', model_name='gpt-4o')
-
-        >>> # z.ai
-        >>> client = get_client('zai', api_key='...', model_name='claude-3-opus')
-
-        >>> # OpenAI
+        >>> # OpenAI (Official)
         >>> client = get_client('openai', api_key='...', model_name='gpt-4o')
 
-        >>> # Anthropic
+        >>> # Generic OpenAI-Compatible (custom base URL)
+        >>> client = get_client('openai_compatible', base_url='https://api.example.com/v1', model_name='...')
+
+        >>> # Azure OpenAI
+        >>> client = get_client('azure_openai', model_name='gpt-4o')
+
+        >>> # Anthropic (Official Claude)
         >>> client = get_client('anthropic', api_key='...', model_name='claude-3-5-sonnet-20241022')
+
+        >>> # Generic Anthropic-Compatible
+        >>> client = get_client('anthropic_compatible', base_url='https://api.example.com', model_name='...')
+
+        >>> # OpenRouter
+        >>> client = get_client('openrouter', api_key='...', model_name='kimi/kimi-k2.5')
+
+        >>> # ZenMux
+        >>> client = get_client('zenmux', api_key='...', model_name='ernie-5.0-thinking-preview')
+
+        >>> # z.ai
+        >>> client = get_client('zai', api_key='...', model_name='glm-4.7')
+
+        >>> # Groq (fast inference)
+        >>> client = get_client('groq', api_key='...', model_name='llama-3.1-70b-versatile')
+
+        >>> # Mistral AI
+        >>> client = get_client('mistral', api_key='...', model_name='mistral-large-latest')
+
+        >>> # Fireworks AI
+        >>> client = get_client('fireworks', api_key='...', model_name='accounts/fireworks/models/llama-v3p1-70b-instruct')
+
+        >>> # Together AI
+        >>> client = get_client('together', api_key='...', model_name='meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo')
+
+        >>> # DeepSeek
+        >>> client = get_client('deepseek', api_key='...', model_name='deepseek-chat')
+
+        >>> # SambaNova Cloud (fast DeepSeek inference, 128K context)
+        >>> client = get_client('sambanova', api_key='...', model_name='DeepSeek-V3.1')
+
+        >>> # Nebius Token Factory (GLM-4.7, DeepSeek, Llama)
+        >>> client = get_client('nebius', api_key='...', model_name='z-ai/GLM-4.7')
 
         >>> # Gemini
         >>> client = get_client('gemini', api_key='...', model_name='gemini-1.5-pro')
 
-        >>> # LiteLLM (universal)
+        >>> # LiteLLM (universal - supports 100+ providers)
         >>> client = get_client('litellm', model_name='gpt-4o')
     """
     provider = provider.lower()
 
     if provider == "openai":
         return OpenAIClient(**kwargs)
+    elif provider == "openai_compatible":
+        return GenericOpenAIClient(**kwargs)
+    elif provider == "azure_openai":
+        return AzureOpenAIClient(**kwargs)
     elif provider == "openrouter":
         return OpenRouterClient(**kwargs)
     elif provider == "zenmux":
@@ -60,8 +103,24 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         return ZaiClient(**kwargs)
     elif provider == "anthropic":
         return AnthropicClient(**kwargs)
+    elif provider == "anthropic_compatible":
+        return AnthropicCompatibleClient(**kwargs)
     elif provider == "gemini":
         return GeminiClient(**kwargs)
+    elif provider == "groq":
+        return GroqClient(**kwargs)
+    elif provider == "mistral":
+        return MistralClient(**kwargs)
+    elif provider == "fireworks":
+        return FireworksClient(**kwargs)
+    elif provider == "together":
+        return TogetherClient(**kwargs)
+    elif provider == "deepseek":
+        return DeepSeekClient(**kwargs)
+    elif provider == "sambanova":
+        return SambaNovaClient(**kwargs)
+    elif provider == "nebius":
+        return NebiusClient(**kwargs)
     elif provider == "litellm":
         return LiteLLMClient(**kwargs)
     else:
@@ -73,10 +132,20 @@ __all__ = [
     "BaseLM",
     "get_client",
     "OpenAIClient",
+    "GenericOpenAIClient",
+    "AzureOpenAIClient",
     "OpenRouterClient",
     "ZenMuxClient",
     "ZaiClient",
     "AnthropicClient",
+    "AnthropicCompatibleClient",
     "GeminiClient",
     "LiteLLMClient",
+    "GroqClient",
+    "MistralClient",
+    "FireworksClient",
+    "TogetherClient",
+    "DeepSeekClient",
+    "SambaNovaClient",
+    "NebiusClient",
 ]

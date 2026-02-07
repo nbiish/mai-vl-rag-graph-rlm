@@ -10,36 +10,17 @@ Includes SOTA RAG capabilities:
 - Vision/multimodal support
 - Qwen3-VL multimodal embeddings (text, image, video)
 
-Example:
-    >>> from vl_rag_graph_rlm import VLRAGGraphRLM
-    >>>
-    >>> # OpenRouter with cheap SOTA model
-    >>> vlrag = VLRAGGraphRLM(provider="openrouter")
-    >>> result = vlrag.completion("Summarize this", context=long_document)
-    >>> print(result.response)
-    >>>
-    >>> # RAG-enhanced
-    >>> from vl_rag_graph_rlm.rag import RAGEnhancedVLRAGGraphRLM
-    >>> rag_vlrag = RAGEnhancedVLRAGGraphRLM(
-    ...     llm_provider="openrouter",
-    ...     llm_model="kimi/kimi-k2.5",
-    ...     embedding_provider="openrouter"
-    ... )
-    >>> result = rag_vlrag.query("What is the main topic?")
-    >>>
-    >>> # Multimodal RAG with Qwen3-VL
-    >>> from vl_rag_graph_rlm.rag import MultimodalVLRAGGraphRLM
-    >>> mm_rag = MultimodalVLRAGGraphRLM(
-    ...     llm_provider="openrouter",
-    ...     llm_model="gpt-4o",
-    ...     embedding_model="Qwen/Qwen3-VL-Embedding-2B"
-    ... )
-    >>> mm_rag.add_pdf("document.pdf")
-    >>> mm_rag.add_image("diagram.png")
-    >>> result = mm_rag.query("Explain the diagram")
+Quick Start:
+    >>> from vl_rag_graph_rlm import MultimodalRAGPipeline
+    >>> 
+    >>> # Unified pipeline
+    >>> pipeline = MultimodalRAGPipeline()
+    >>> pipeline.add_pdf("document.pdf", extract_images=True)
+    >>> result = pipeline.query("Explain Figure 3")
+    >>> print(result.answer)
 """
 
-from vl_rag_graph_rlm.core import (
+from vl_rag_graph_rlm.rlm_core import (
     VLRAGGraphRLM,
     vlraggraphrlm_complete,
     VLRAGGraphRLMError,
@@ -50,12 +31,20 @@ from vl_rag_graph_rlm.clients import (
     get_client,
     BaseLM,
     OpenAIClient,
+    GenericOpenAIClient,
+    AzureOpenAIClient,
     OpenRouterClient,
     ZenMuxClient,
     ZaiClient,
     AnthropicClient,
+    AnthropicCompatibleClient,
     GeminiClient,
     LiteLLMClient,
+    GroqClient,
+    MistralClient,
+    FireworksClient,
+    TogetherClient,
+    DeepSeekClient,
 )
 from vl_rag_graph_rlm.types import (
     VLRAGGraphRLMChatCompletion,
@@ -64,10 +53,19 @@ from vl_rag_graph_rlm.types import (
     ModelUsageSummary,
     ProviderType,
 )
+from vl_rag_graph_rlm.pipeline import (
+    MultimodalRAGPipeline,
+    PipelineResult,
+    create_pipeline,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
+    # Unified Pipeline
+    "MultimodalRAGPipeline",
+    "PipelineResult",
+    "create_pipeline",
     # Core VL_RAG_GRAPH_RLM
     "VLRAGGraphRLM",
     "vlraggraphrlm_complete",
@@ -79,19 +77,28 @@ __all__ = [
     "BaseLM",
     # Specific clients
     "OpenAIClient",
+    "GenericOpenAIClient",
+    "AzureOpenAIClient",
     "OpenRouterClient",
     "ZenMuxClient",
     "ZaiClient",
     "AnthropicClient",
+    "AnthropicCompatibleClient",
     "GeminiClient",
     "LiteLLMClient",
+    "GroqClient",
+    "MistralClient",
+    "FireworksClient",
+    "TogetherClient",
+    "DeepSeekClient",
     # Types
     "VLRAGGraphRLMChatCompletion",
     "REPLResult",
     "UsageSummary",
     "ModelUsageSummary",
     "ProviderType",
-    # RAG (imported from submodule)
+    # RAG submodules
     "rag",
     "vision",
+    "pipeline",
 ]

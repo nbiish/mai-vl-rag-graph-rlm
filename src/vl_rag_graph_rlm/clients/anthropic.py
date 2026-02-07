@@ -122,3 +122,84 @@ class AnthropicClient(BaseLM):
         if self._last_usage is None:
             return ModelUsageSummary(total_calls=0, total_input_tokens=0, total_output_tokens=0)
         return self._last_usage
+
+
+class AnthropicCompatibleClient(AnthropicClient):
+    """
+    Client for generic Anthropic-compatible APIs.
+
+    Use this for custom providers or proxies that implement
+    the Anthropic API specification with a custom base URL.
+
+    Args:
+        api_key: API key for the provider
+        model_name: Model name to use
+        base_url: Full base URL for the API
+
+    Examples:
+        >>> # Generic Anthropic-compatible endpoint
+        >>> client = AnthropicCompatibleClient(
+        ...     api_key="your-key",
+        ...     model_name="claude-3-5-sonnet",
+        ...     base_url="https://api.example.com/v1"
+        ... )
+
+        >>> # Using environment variables
+        >>> # Set ANTHROPIC_COMPATIBLE_API_KEY, ANTHROPIC_COMPATIBLE_BASE_URL, ANTHROPIC_COMPATIBLE_MODEL
+        >>> client = AnthropicCompatibleClient()
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        **kwargs,
+    ):
+        # Resolve from environment if not provided
+        api_key = api_key or os.getenv("ANTHROPIC_COMPATIBLE_API_KEY")
+        base_url = base_url or os.getenv("ANTHROPIC_COMPATIBLE_BASE_URL")
+        model_name = model_name or os.getenv("ANTHROPIC_COMPATIBLE_MODEL")
+
+        if not api_key:
+            raise ValueError(
+                "API key required for AnthropicCompatibleClient. "
+                "Set ANTHROPIC_COMPATIBLE_API_KEY environment variable or pass api_key explicitly."
+            )
+
+        if not base_url:
+            raise ValueError(
+                "base_url is required for AnthropicCompatibleClient. "
+                "Set ANTHROPIC_COMPATIBLE_BASE_URL environment variable or pass base_url explicitly."
+            )
+
+        if not model_name:
+            raise ValueError(
+                "model_name is required for AnthropicCompatibleClient. "
+                "Set ANTHROPIC_COMPATIBLE_MODEL environment variable or pass model_name explicitly."
+            )
+
+        # Store values before calling parent init
+        self.api_key = api_key
+        self.base_url = base_url
+
+        # Initialize the base class
+        super().__init__(model_name=model_name, **kwargs)
+
+        # Re-initialize Anthropic clients with custom base URL
+        self.client = anthropic.Anthropic(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            **kwargs
+        )
+        self.async_client = anthropic.AsyncAnthropic(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            **kwargs
+        )
+
+        # Usage tracking
+        self.model_call_counts: dict[str, int] = defaultdict(int)
+        self.model_input_tokens: dict[str, int] = defaultdict(int)
+        self.model_output_tokens: dict[str, int] = defaultdict(int)
+        self._last_usage: ModelUsageSummary | None = None

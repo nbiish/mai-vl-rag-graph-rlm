@@ -1,6 +1,7 @@
 """Core VL_RAG_GRAPH_RLM implementation combining Vision-Language, RAG, and Graph-based reasoning."""
 
 import asyncio
+import os
 import time
 from typing import Any, Optional
 
@@ -10,11 +11,80 @@ from vl_rag_graph_rlm.types import (
     CodeBlock,
     REPLResult,
     RLMIteration,
-    RLMChatCompletion,
+    VLRAGGraphRLMChatCompletion as RLMChatCompletion,
     ProviderType,
 )
 from vl_rag_graph_rlm.utils.parsing import find_code_blocks, find_final_answer, format_iteration
 from vl_rag_graph_rlm.utils.prompts import build_system_prompt
+
+
+def _get_default_model(provider: str) -> str:
+    """Get default model for provider, checking env vars first."""
+    env_var_map = {
+        "openrouter": "OPENROUTER_MODEL",
+        "zenmux": "ZENMUX_MODEL",
+        "zai": "ZAI_MODEL",
+        "openai": "OPENAI_MODEL",
+        "anthropic": "ANTHROPIC_MODEL",
+        "gemini": "GOOGLE_MODEL",
+        "azure_openai": "AZURE_OPENAI_MODEL",
+        "groq": "GROQ_MODEL",
+        "mistral": "MISTRAL_MODEL",
+        "fireworks": "FIREWORKS_MODEL",
+        "together": "TOGETHER_MODEL",
+        "deepseek": "DEEPSEEK_MODEL",
+        "sambanova": "SAMBANOVA_MODEL",
+        "nebius": "NEBIUS_MODEL",
+    }
+    env_var = env_var_map.get(provider, f"{provider.upper()}_MODEL")
+    env_model = os.getenv(env_var)
+    if env_model:
+        return env_model
+    
+    # Fall back to hardcoded defaults
+    hardcoded_defaults = {
+        "openrouter": "minimax/minimax-m2.1",
+        "zenmux": "ernie-5.0-thinking-preview",
+        "zai": "glm-4.7",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-5-haiku-20241022",
+        "gemini": "gemini-1.5-flash",
+        "groq": "llama-3.1-70b-versatile",
+        "mistral": "mistral-large-latest",
+        "fireworks": "accounts/fireworks/models/llama-v3p1-70b-instruct",
+        "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        "deepseek": "deepseek-chat",
+        "sambanova": "DeepSeek-V3.1",  # Latest DeepSeek V3 on SambaNova (200+ tok/sec, 128K context)
+        "nebius": "z-ai/GLM-4.7",  # GLM-4.7 from Z.AI
+    }
+    return hardcoded_defaults.get(provider, "gpt-4o-mini")
+
+
+def _get_recursive_model(provider: str, primary_model: str) -> str:
+    """Get cheaper recursive model, checking env vars first."""
+    env_var_map = {
+        "openrouter": "OPENROUTER_RECURSIVE_MODEL",
+        "zenmux": "ZENMUX_RECURSIVE_MODEL",
+        "zai": "ZAI_RECURSIVE_MODEL",
+        "openai": "OPENAI_RECURSIVE_MODEL",
+        "anthropic": "ANTHROPIC_RECURSIVE_MODEL",
+        "gemini": "GOOGLE_RECURSIVE_MODEL",
+    }
+    env_var = env_var_map.get(provider, f"{provider.upper()}_RECURSIVE_MODEL")
+    env_model = os.getenv(env_var)
+    if env_model:
+        return env_model
+    
+    # Fall back to hardcoded defaults
+    hardcoded_recursive = {
+        "openrouter": "solar-pro/solar-pro-3:free",
+        "zenmux": "glm-4.7-flash",
+        "zai": "glm-4.7-flash",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-5-haiku-20241022",
+        "gemini": "gemini-1.5-flash",
+    }
+    return hardcoded_recursive.get(provider, primary_model)
 
 
 class VLRAGGraphRLMError(Exception):
@@ -42,32 +112,17 @@ class VLRAGGraphRLM:
     - Safe REPL execution with RestrictedPython
     - Recursive sub-processing with depth tracking
     
+    Model Selection Priority:
+    1. Code-specified model (highest priority)
+    2. {PROVIDER}_MODEL environment variable
+    3. Hardcoded default (lowest priority)
+    
     Recommended Cheap SOTA Models (Jan 2026):
     - OpenRouter: kimi/kimi-k2.5, z-ai/glm-4.7, solar-pro/solar-pro-3:free
     - ZenMux: ernie-5.0-thinking-preview, dubao-seed-1.8, glm-4.7-flash
     - z.ai: glm-4.7, glm-4.7-coding
     - OpenAI: gpt-4o-mini (cheap), gpt-4o (capable)
     """
-
-    # Default cheap SOTA models by provider
-    DEFAULT_MODELS = {
-        "openrouter": "kimi/kimi-k2.5",
-        "zenmux": "ernie-5.0-thinking-preview", 
-        "zai": "glm-4.7",
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-3-5-haiku-20241022",
-        "gemini": "gemini-1.5-flash",
-    }
-
-    # Cheaper models for recursive calls
-    RECURSIVE_MODELS = {
-        "openrouter": "solar-pro/solar-pro-3:free",
-        "zenmux": "glm-4.7-flash",
-        "zai": "glm-4.7-flash",
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-3-5-haiku-20241022",
-        "gemini": "gemini-1.5-flash",
-    }
 
     def __init__(
         self,
@@ -87,8 +142,8 @@ class VLRAGGraphRLM:
 
         Args:
             provider: API provider ('openrouter', 'zenmux', 'zai', 'openai', 'anthropic', 'gemini', 'litellm')
-            model: Model name (defaults to cheap SOTA model for provider)
-            recursive_model: Optional cheaper model for recursive calls (defaults to free/cheap tier)
+            model: Model name (defaults to env var {PROVIDER}_MODEL or hardcoded default)
+            recursive_model: Optional cheaper model for recursive calls (defaults to env var or free/cheap tier)
             api_key: API key (falls back to environment variable)
             api_base: Custom API base URL
             max_depth: Maximum recursion depth
@@ -98,27 +153,22 @@ class VLRAGGraphRLM:
             **client_kwargs: Additional arguments for the client
             
         Examples:
-            # Use cheap SOTA defaults (OpenRouter + Kimi K2.5)
+            # Use model from env var or default (OpenRouter + Kimi K2.5)
             >>> vlrag = VLRAGGraphRLM()
             
-            # Use ZenMux with Ernie 5.0
-            >>> vlrag = VLRAGGraphRLM(provider="zenmux")
+            # Override model in code for specific section
+            >>> vlrag = VLRAGGraphRLM(provider="openrouter", model="gpt-4o")
             
-            # Use z.ai GLM-4.7
-            >>> vlrag = VLRAGGraphRLM(provider="zai")
-            
-            # Custom cheap setup with free recursive model
-            >>> vlrag = VLRAGGraphRLM(
-            ...     provider="openrouter",
-            ...     model="kimi/kimi-k2.5",
-            ...     recursive_model="solar-pro/solar-pro-3:free"
-            ... )
+            # Set model via environment
+            >>> # export OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
+            >>> vlrag = VLRAGGraphRLM(provider="openrouter")
         """
         self.provider = provider
-        # Use default model for provider if not specified
-        self.model = model or self.DEFAULT_MODELS.get(provider, "gpt-4o-mini")
-        # Use cheaper recursive model if not specified
-        self.recursive_model = recursive_model or self.RECURSIVE_MODELS.get(provider, self.model)
+        
+        # Model resolution priority: code > env var > hardcoded default
+        self.model = model or _get_default_model(provider)
+        self.recursive_model = recursive_model or _get_recursive_model(provider, self.model)
+        
         self.api_key = api_key
         self.api_base = api_base
         self.max_depth = max_depth
@@ -129,7 +179,7 @@ class VLRAGGraphRLM:
 
         # Initialize client
         client_args = {
-            "model_name": model,
+            "model_name": self.model,
             **client_kwargs
         }
         if api_key:
@@ -330,7 +380,7 @@ class VLRAGGraphRLM:
                 return f"Max recursion depth ({self.max_depth}) reached"
 
             # Create sub-RLM with increased depth
-            sub_rlm = RLM(
+            sub_rlm = VLRAGGraphRLM(
                 provider=self.provider,
                 model=self.recursive_model,
                 recursive_model=self.recursive_model,
@@ -362,7 +412,7 @@ class VLRAGGraphRLM:
 
 
 # Convenience function for simple usage
-def rlm_complete(
+def vlraggraphrlm_complete(
     query: str,
     context: str = "",
     provider: str = "openai",
@@ -384,6 +434,6 @@ def rlm_complete(
     Returns:
         Final answer string
     """
-    rlm = RLM(provider=provider, model=model, api_key=api_key, **kwargs)
+    rlm = VLRAGGraphRLM(provider=provider, model=model, api_key=api_key, **kwargs)
     result = rlm.completion(query, context)
     return result.response

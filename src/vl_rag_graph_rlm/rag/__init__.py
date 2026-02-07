@@ -302,7 +302,7 @@ def hybrid_search(
     return searcher.search(query, dense_results, keyword_results, top_k)
 
 
-# Import Qwen3-VL providers (optional - only available if dependencies installed)
+# Import Qwen3-VL providers (optional - requires torch, transformers)
 try:
     from vl_rag_graph_rlm.rag.qwen3vl import (
         Qwen3VLEmbeddingProvider,
@@ -311,23 +311,49 @@ try:
         create_qwen3vl_reranker,
         MultimodalDocument
     )
-    __all__ = [
-        "SearchResult",
-        "ReciprocalRankFusion",
-        "MultiFactorReranker",
-        "HybridSearcher",
-        "hybrid_search",
+    HAS_QWEN3VL = True
+except ImportError:
+    HAS_QWEN3VL = False
+    Qwen3VLEmbeddingProvider = None  # type: ignore
+    Qwen3VLRerankerProvider = None  # type: ignore
+    create_qwen3vl_embedder = None  # type: ignore
+    create_qwen3vl_reranker = None  # type: ignore
+    MultimodalDocument = None  # type: ignore
+
+# Import Paddle-ERNIE-RAG components (separate from Qwen3VL)
+try:
+    from vl_rag_graph_rlm.rag.ernie_client import ERNIEClient
+    from vl_rag_graph_rlm.rag.vector_store import MilvusVectorStore
+    from vl_rag_graph_rlm.rag.reranker import CompositeReranker
+    HAS_PADDLE = True
+except ImportError:
+    HAS_PADDLE = False
+    ERNIEClient = None  # type: ignore
+    MilvusVectorStore = None  # type: ignore
+    CompositeReranker = None  # type: ignore
+
+# Build __all__ based on available imports
+__all__ = [
+    # Hybrid search (always available)
+    "SearchResult",
+    "ReciprocalRankFusion",
+    "MultiFactorReranker",
+    "HybridSearcher",
+    "hybrid_search",
+]
+
+if HAS_QWEN3VL:
+    __all__.extend([
         "Qwen3VLEmbeddingProvider",
         "Qwen3VLRerankerProvider",
         "create_qwen3vl_embedder",
         "create_qwen3vl_reranker",
-        "MultimodalDocument"
-    ]
-except ImportError:
-    __all__ = [
-        "SearchResult",
-        "ReciprocalRankFusion",
-        "MultiFactorReranker",
-        "HybridSearcher",
-        "hybrid_search"
-    ]
+        "MultimodalDocument",
+    ])
+
+if HAS_PADDLE:
+    __all__.extend([
+        "ERNIEClient",
+        "MilvusVectorStore",
+        "CompositeReranker",
+    ])

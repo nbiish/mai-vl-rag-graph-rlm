@@ -36,7 +36,7 @@ class OpenAICompatibleClient(BaseLM):
             "fast": "glm-4.7-flash",
         },
         "openrouter": {
-            "default": "kimi/kimi-k2.5",
+            "default": "minimax/minimax-m2.1",
             "coding": "z-ai/glm-4.7",
             "free": "solar-pro/solar-pro-3:free",
             "fast": "google/gemini-3-flash-preview",
@@ -128,7 +128,7 @@ class OpenAICompatibleClient(BaseLM):
 
         return response.choices[0].message.content
 
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
         """Make an asynchronous completion call."""
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
@@ -138,7 +138,7 @@ class OpenAICompatibleClient(BaseLM):
 
         start_time = time.time()
         response = await self.async_client.chat.completions.create(
-            model=model, messages=messages
+            model=model, messages=messages, **kwargs
         )
         self._track_usage(response, model, time.time() - start_time)
 
@@ -206,6 +206,7 @@ class OpenRouterClient(OpenAICompatibleClient):
     """Convenience class for OpenRouter API.
     
     Recommended cheap SOTA models:
+        - minimax/minimax-m2.1: Minimax 2.1, excellent reasoning
         - kimi/kimi-k2.5: Excellent reasoning, very cheap
         - z-ai/glm-4.7: Great for coding
         - solar-pro/solar-pro-3:free: Free tier
@@ -215,7 +216,7 @@ class OpenRouterClient(OpenAICompatibleClient):
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "kimi/kimi-k2.5",
+            model_name=model_name or "minimax/minimax-m2.1",
             provider="openrouter",
             **kwargs,
         )
@@ -241,12 +242,12 @@ class ZenMuxClient(OpenAICompatibleClient):
 
 class ZaiClient(OpenAICompatibleClient):
     """Convenience class for z.ai API (Zhipu AI).
-    
+
     Recommended models:
         - glm-4.7: Flagship model, excellent reasoning
         - glm-4.7-coding: Optimized for code generation
         - glm-4.7-flash: Fast, cost-effective
-        
+
     Note: z.ai also offers flat-rate Coding Plans ($3-15/mo) via their native API.
     """
 
@@ -255,5 +256,312 @@ class ZaiClient(OpenAICompatibleClient):
             api_key=api_key,
             model_name=model_name or "glm-4.7",
             provider="zai",
+            **kwargs,
+        )
+
+
+class GenericOpenAIClient(OpenAICompatibleClient):
+    """
+    Generic client for any OpenAI-compatible API endpoint.
+
+    Use this for custom providers or self-hosted models that implement
+    the OpenAI API specification.
+
+    Args:
+        api_key: API key for the provider
+        model_name: Model name to use
+        base_url: Full base URL for the API (e.g., "https://api.groq.com/openai/v1")
+
+    Examples:
+        >>> # Generic OpenAI-compatible endpoint
+        >>> client = GenericOpenAIClient(
+        ...     api_key="your-key",
+        ...     model_name="llama-3.1-70b",
+        ...     base_url="https://api.example.com/v1"
+        ... )
+    """
+
+    DEFAULT_URLS = {
+        "openai_compatible": "https://api.openai.com/v1",  # Placeholder, should be overridden
+    }
+
+    API_KEY_ENV = {
+        "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
+    }
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        **kwargs
+    ):
+        # Resolve API key from env if not provided
+        if api_key is None:
+            api_key = os.getenv("OPENAI_COMPATIBLE_API_KEY")
+
+        # Resolve base URL from env if not provided
+        if base_url is None:
+            base_url = os.getenv("OPENAI_COMPATIBLE_BASE_URL")
+
+        if not base_url:
+            raise ValueError(
+                "base_url is required for GenericOpenAIClient. "
+                "Pass it explicitly or set OPENAI_COMPATIBLE_BASE_URL environment variable."
+            )
+
+        # Get model from env if not provided
+        if model_name is None:
+            model_name = os.getenv("OPENAI_COMPATIBLE_MODEL")
+
+        if not model_name:
+            raise ValueError(
+                "model_name is required for GenericOpenAIClient. "
+                "Pass it explicitly or set OPENAI_COMPATIBLE_MODEL environment variable."
+            )
+
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name,
+            base_url=base_url,
+            provider="openai_compatible",
+            **kwargs,
+        )
+
+
+class AzureOpenAIClient(OpenAICompatibleClient):
+    """
+    Client for Azure OpenAI Service.
+
+    Requires AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables,
+    or explicit api_key and base_url parameters.
+
+    Examples:
+        >>> # Using environment variables
+        >>> client = AzureOpenAIClient(model_name="gpt-4o")
+
+        >>> # Explicit configuration
+        >>> client = AzureOpenAIClient(
+        ...     api_key="your-azure-key",
+        ...     base_url="https://your-resource.openai.azure.com/openai/deployments/your-deployment",
+        ...     model_name="gpt-4o"
+        ... )
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str | None = None,
+        base_url: str | None = None,
+        api_version: str = "2024-02-01",
+        **kwargs
+    ):
+        # Resolve Azure credentials
+        api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = base_url or os.getenv("AZURE_OPENAI_ENDPOINT")
+
+        if not api_key:
+            raise ValueError(
+                "Azure OpenAI API key required. "
+                "Set AZURE_OPENAI_API_KEY environment variable or pass api_key explicitly."
+            )
+
+        if not endpoint:
+            raise ValueError(
+                "Azure OpenAI endpoint required. "
+                "Set AZURE_OPENAI_ENDPOINT environment variable or pass base_url explicitly."
+            )
+
+        # Construct full base URL with API version
+        # Endpoint should be like: https://your-resource.openai.azure.com/
+        # We need: https://your-resource.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version={version}
+        base_url = endpoint.rstrip("/")
+        if "/openai/deployments/" not in base_url:
+            # Assume endpoint is just the resource URL
+            if model_name:
+                base_url = f"{base_url}/openai/deployments/{model_name}"
+
+        # Add API version as query param to base_url
+        if "?" not in base_url:
+            base_url = f"{base_url}?api-version={api_version}"
+
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "gpt-4o",
+            base_url=base_url,
+            provider="azure_openai",
+            **kwargs,
+        )
+
+
+# ============================================================
+# Popular OpenAI-Compatible Provider Clients
+# ============================================================
+
+class GroqClient(OpenAICompatibleClient):
+    """
+    Client for Groq API (ultra-fast inference).
+
+    Recommended models:
+        - llama-3.1-70b-versatile: Fast, capable
+        - llama-3.1-8b-instant: Fastest, cheapest
+        - mixtral-8x7b-32768: Large context
+
+    Get API key: https://console.groq.com
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("GROQ_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "llama-3.1-70b-versatile",
+            base_url="https://api.groq.com/openai/v1",
+            provider="groq",
+            **kwargs,
+        )
+
+
+class MistralClient(OpenAICompatibleClient):
+    """
+    Client for Mistral AI API.
+
+    Recommended models:
+        - mistral-large-latest: Most capable
+        - mistral-medium: Balanced
+        - mistral-small: Fast, cheap
+
+    Get API key: https://console.mistral.ai
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("MISTRAL_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "mistral-large-latest",
+            base_url="https://api.mistral.ai/v1",
+            provider="mistral",
+            **kwargs,
+        )
+
+
+class FireworksClient(OpenAICompatibleClient):
+    """
+    Client for Fireworks AI API.
+
+    Recommended models:
+        - accounts/fireworks/models/llama-v3p1-70b-instruct: Llama 3.1 70B
+        - accounts/fireworks/models/mixtral-8x22b-instruct: Mixtral 8x22B
+
+    Get API key: https://fireworks.ai
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("FIREWORKS_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            base_url="https://api.fireworks.ai/inference/v1",
+            provider="fireworks",
+            **kwargs,
+        )
+
+
+class TogetherClient(OpenAICompatibleClient):
+    """
+    Client for Together AI API.
+
+    Recommended models:
+        - meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo: Fast Llama 3.1
+        - mistralai/Mixtral-8x22B-Instruct-v0.1: Mixtral 8x22B
+
+    Get API key: https://api.together.ai
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("TOGETHER_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            base_url="https://api.together.xyz/v1",
+            provider="together",
+            **kwargs,
+        )
+
+
+class DeepSeekClient(OpenAICompatibleClient):
+    """
+    Client for DeepSeek API.
+
+    Recommended models:
+        - deepseek-chat: DeepSeek-V3 general purpose
+        - deepseek-reasoner: DeepSeek-R1 reasoning model
+
+    Get API key: https://platform.deepseek.com
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            provider="deepseek",
+            **kwargs,
+        )
+
+
+class SambaNovaClient(OpenAICompatibleClient):
+    """
+    Client for SambaNova Cloud API.
+
+    Production models (128K context):
+        - DeepSeek-V3.1: Latest DeepSeek V3 (200+ tok/sec)
+        - DeepSeek-V3-0324: DeepSeek V3 March 2024 (250+ tok/sec)
+        - DeepSeek-R1-0528: Reasoning model
+        - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
+
+    Rate limits (Free tier): 20 RPM, 40 RPD, 200K TPD
+    Rate limits (Developer tier): 60 RPM, 12K RPD
+
+    SambaNova Cloud provides fastest inference for open source models
+    with OpenAI-compatible API.
+
+    Get API key: https://cloud.sambanova.ai
+    Docs: https://docs.sambanova.ai/cloud/docs/get-started/supported-models
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("SAMBANOVA_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "DeepSeek-V3.1",
+            base_url="https://api.sambanova.ai/v1",
+            provider="sambanova",
+            **kwargs,
+        )
+
+
+class NebiusClient(OpenAICompatibleClient):
+    """
+    Client for Nebius Token Factory API.
+
+    Recommended models:
+        - z-ai/GLM-4.7: Z.AI's flagship for agentic coding and reasoning
+        - deepseek-ai/DeepSeek-R1-0528: DeepSeek R1 reasoning
+        - meta-llama/Meta-Llama-3.1-70B-Instruct: Llama 3.1 70B
+
+    Nebius Token Factory provides OpenAI-compatible access to various
+    models including GLM-4.7, DeepSeek, and Llama series.
+
+    Get API key: https://tokenfactory.nebius.com
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("NEBIUS_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "z-ai/GLM-4.7",
+            base_url="https://api.tokenfactory.nebius.com/v1",
+            provider="nebius",
             **kwargs,
         )

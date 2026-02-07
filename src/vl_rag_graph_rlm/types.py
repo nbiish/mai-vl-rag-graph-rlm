@@ -6,12 +6,21 @@ from typing import Any, Literal, TypedDict, Optional, Callable, Awaitable
 # Provider types
 ProviderType = Literal[
     "openai",
+    "openai_compatible",
+    "azure_openai",
     "openrouter",
     "zenmux",
     "zai",
     "anthropic",
+    "anthropic_compatible",
     "gemini",
-    "azure_openai",
+    "groq",
+    "mistral",
+    "fireworks",
+    "together",
+    "deepseek",
+    "sambanova",
+    "nebius",
     "litellm",
 ]
 
