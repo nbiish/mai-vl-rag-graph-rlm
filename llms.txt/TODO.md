@@ -4,7 +4,7 @@
 
 ## In Progress
 
-- (none — v0.1.0 initial release ready)
+- [ ] Verify full pipeline end-to-end with Qwen3-VL embedding + reranking + RAG + Graph + RLM
 
 ## Roadmap — v0.2.0
 
@@ -50,26 +50,42 @@
 - [ ] Token usage tracking and cost estimation per provider
 - [ ] Rate limiting / retry logic with exponential backoff
 
-## Completed (v0.1.0)
+## Completed (v0.1.x — Feb 2026)
 
-- [x] Unified CLI with `--provider` flag supporting 15 providers (plus 2 generic compatible templates)
-- [x] `--list-providers` command showing API key status for all providers
-- [x] `--version`, `--model`, `--max-depth`, `--max-iterations` flags
+### Provider Hierarchy & Auto Mode
+- [x] **`HierarchyClient`**: Automatic fallback through configurable provider order
+- [x] **`PROVIDER_HIERARCHY` env var**: Editable comma-separated provider order in `.env`
+- [x] **`--provider auto`** (default): CLI no longer requires `--provider` flag
+- [x] **`--show-hierarchy`**: CLI command to display fallback order + availability
+- [x] **`get_client('auto')`**: Python API returns `HierarchyClient` with fallback
+- [x] **`HierarchyClient(start_provider='groq')`**: Start hierarchy from a specific provider
+- [x] **Auto fallback on errors**: Rate limits, auth errors, network issues trigger next provider
+- [x] **CLI packaging verified**: `pip install -e .` → `vrlmrag` command works
+
+### Provider Model Updates (Feb 7, 2026 — live API-verified)
+- [x] **Groq default → `moonshotai/kimi-k2-instruct-0905`** (Kimi K2 on Groq LPU, verified via API)
+- [x] **Cerebras default → `zai-glm-4.7`** (GLM 4.7 355B, ~1000 tok/s — `llama-3.3-70b` deprecated Feb 16)
+- [x] **SambaNova models updated**: DeepSeek-V3.2 default, also V3.1, gpt-oss-120b, Qwen3-235B, Llama-4-Maverick
+- [x] **Nebius models documented**: MiniMax-M2.1 default, also GLM-4.7-FP8, Nemotron-Ultra-253B
+- [x] **RECOMMENDED_MODELS dict** updated with Feb 2026 models for all 8 providers
+- [x] **All hardcoded defaults and recursive models** updated in `rlm_core.py`
+- [x] **All client docstrings** updated with current model lists from live API queries
+- [x] **Comprehensive llms.txt/ update**: PRD, ARCHITECTURE, RULES, TODO reflect Feb 2026 landscape
+
+### Provider Integrations
+- [x] **ZenMux integration**: Corrected base URL to `https://zenmux.ai/api/v1`, `provider/model` format
+- [x] **z.ai Coding Plan integration**: Dual-endpoint (`api.z.ai` Coding Plan first → `open.bigmodel.cn` fallback)
+- [x] **All provider connectivity verified**: Cerebras, Groq, Nebius, ZenMux, z.ai (Coding Plan), OpenRouter, SambaNova
+
+### Core Release (v0.1.0)
+- [x] Unified CLI with `--provider` flag supporting 17 providers
+- [x] `--list-providers`, `--version`, `--model`, `--max-depth`, `--max-iterations` flags
 - [x] Backward-compatible `--samba-nova` and `--nebius` aliases
-- [x] Upgrade all 17 provider templates to full 6-pillar pipeline
-- [x] Implement Nebius Token Factory support (MiniMax-M2.1 default)
-- [x] Implement SambaNova Cloud support (DeepSeek-V3.2 default)
-- [x] Implement Cerebras support (llama-3.3-70b default)
-- [x] Add generic OpenAI-compatible and Anthropic-compatible provider templates
+- [x] All 17 provider templates exercising full 6-pillar pipeline
+- [x] Nebius Token Factory support (MiniMax-M2.1 default)
+- [x] SambaNova Cloud support (DeepSeek-V3.2 default)
+- [x] Generic OpenAI-compatible and Anthropic-compatible provider templates
 - [x] Upgrade transformers to 5.1.0 for Qwen3-VL (`qwen3_vl` architecture)
-- [x] Verify Qwen3-VL visual embeddings working (26 embedded docs, 11 images)
+- [x] Qwen3-VL visual embeddings verified (26 embedded docs, 11 images)
 - [x] Full pipeline test: PPTX → Qwen3-VL embed → hybrid search → RRF → rerank → RLM → report
-- [x] Document full architecture in `llms.txt/ARCHITECTURE.md` with 6-pillar component map
-- [x] Document coding rules in `llms.txt/RULES.md` with device detection patterns
-- [x] Document PRD with six-pillar architecture in `llms.txt/PRD.md` with all 17 providers
-- [x] Comprehensive `.env.example` with all 17 providers
-- [x] `templates/__init__.py` updated with 6-pillar documentation
-- [x] **ZenMux integration fixed**: Corrected base URL to `https://zenmux.ai/api/v1`, updated model format to `provider/model`
-- [x] **z.ai Coding Plan integration**: Added dual-endpoint support (Coding Plan first, normal fallback)
-- [x] **Groq model fixed**: Updated default to `llama-3.3-70b-versatile`
-- [x] **All provider connectivity verified**: 7 of 8 providers with API keys working (SambaNova rate-limited)
+- [x] Comprehensive documentation: ARCHITECTURE.md, RULES.md, PRD.md, .env.example

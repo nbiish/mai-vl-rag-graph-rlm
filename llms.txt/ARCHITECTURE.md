@@ -87,9 +87,13 @@
 │             Mistral, Fireworks, Together, Azure OpenAI,             │
 │             Generic OpenAI, Generic Anthropic, LiteLLM            │
 │                                                                      │
-│  Provider Notes:                                                     │
+│  Provider Notes (Feb 2026):                                          │
 │  - ZenMux: Uses provider/model format (e.g., "moonshotai/kimi-k2.5") │
 │  - z.ai: Tries Coding Plan endpoint first, falls back to normal     │
+│  - Groq: LPU, default moonshotai/kimi-k2-instruct-0905              │
+│  - Cerebras: Wafer-scale, default zai-glm-4.7 (355B, ~1000 tok/s)   │
+│  - SambaNova: DeepSeek-V3.2, also V3.1, gpt-oss-120b, Qwen3-235B   │
+│  - Nebius: MiniMax-M2.1, also GLM-4.7-FP8, Nemotron-Ultra-253B     │
 └──────────────┬──────────────────────────────────────────────────────┘
                │
                ▼
@@ -210,8 +214,15 @@ vrlmrag --provider <name> <path>       # Run full pipeline
 vrlmrag --provider <name> <path> -q "Query" -o report.md
 vrlmrag --provider <name> <path> --model <model> --max-depth 5
 
-# Utility
+# Auto mode (uses provider hierarchy — no --provider needed)
+vrlmrag <path>                         # Tries providers in PROVIDER_HIERARCHY order
+vrlmrag <path> -q "Summarize"          # Auto mode with custom query
+
+# Hierarchy management
+vrlmrag --show-hierarchy               # Show fallback order + availability
 vrlmrag --list-providers               # Show providers + API key status
+
+# Utility
 vrlmrag --version                      # Print version
 vrlmrag --help                         # Full usage
 
@@ -224,19 +235,23 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider NAME` | `-p` | LLM provider (required) |
+| `--provider NAME` | `-p` | LLM provider (default: `auto` — uses hierarchy) |
 | `PATH` | | File or folder to process |
 | `--query QUERY` | `-q` | Custom query (default: auto-generated) |
 | `--output PATH` | `-o` | Output markdown report path |
 | `--model MODEL` | `-m` | Override default model |
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
+| `--show-hierarchy` | | Show provider fallback order + availability |
 | `--list-providers` | | Show all providers + key status |
 | `--version` | `-V` | Print version |
 
 ## Environment Variables
 
 ```bash
+# Provider hierarchy (auto mode fallback order)
+PROVIDER_HIERARCHY=zai,zenmux,openrouter,cerebras,groq,nebius,sambanova,...
+
 # Provider API keys
 {PROVIDER}_API_KEY=...
 {PROVIDER}_MODEL=...              # Optional: override default model
@@ -249,3 +264,14 @@ NEBIUS_CONTEXT_WINDOW=128000      # Context window in tokens
 # Embedding models (auto-downloaded from HuggingFace)
 HF_TOKEN=...                      # Optional: for gated models
 ```
+
+### Provider Hierarchy
+
+When `--provider` is omitted or set to `auto`, the system tries providers in
+`PROVIDER_HIERARCHY` order, skipping any without API keys. If a provider fails
+(rate limit, auth error, network), it automatically falls through to the next.
+
+Default order: `zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → gemini → ...`
+
+This enables deploying the same codebase across environments — whichever
+providers have keys configured will be used automatically.

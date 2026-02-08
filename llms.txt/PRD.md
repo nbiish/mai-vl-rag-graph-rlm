@@ -49,47 +49,50 @@ Every template and integration **must** exercise all six pillars:
 
 ## Supported Providers
 
-| Provider | Default Model | Context | Rate Limits |
-|----------|--------------|---------|-------------|
-| SambaNova | DeepSeek-V3.2 | 128K | 200K TPD (free) |
-| Nebius | MiniMax-M2.1 | 128K | No daily limits |
-| OpenRouter | minimax-m2.1 | varies | Per-model |
-| OpenAI | gpt-4o-mini | 128K | Per-tier |
-| Anthropic | claude-3-5-haiku | 200K | Per-tier |
-| Gemini | gemini-1.5-flash | 1M | Per-tier |
-| Groq | llama-3.3-70b-versatile | 128K | Per-tier |
-| DeepSeek | deepseek-chat | 128K | Per-tier |
-| ZenMux | moonshotai/kimi-k2.5 | varies | Per-model |
-| z.ai | glm-4.7 | 128K | Coding Plan / Per-tier |
-| Mistral | mistral-large | 128K | Per-tier |
-| Fireworks | llama-3.1-70b | 128K | Per-tier |
-| Together | llama-3.1-70b-turbo | 128K | Per-tier |
-| Azure OpenAI | gpt-4o | 128K | Per-deployment |
-| Cerebras | llama-3.3-70b | 128K | Per-tier |
-| Generic OpenAI | (user-configured) | varies | Per-provider |
-| Generic Anthropic | (user-configured) | varies | Per-provider |
+| Provider | Default Model | Also Available | Context | Rate Limits |
+|----------|--------------|----------------|---------|-------------|
+| SambaNova | DeepSeek-V3.2 | DeepSeek-V3.1, gpt-oss-120b, Qwen3-235B, Llama-4-Maverick | 128K | 200K TPD (free) |
+| Nebius | MiniMaxAI/MiniMax-M2.1 | zai-org/GLM-4.7-FP8, DeepSeek-R1, Nemotron-Ultra-253B | 128K | No daily limits |
+| OpenRouter | minimax/minimax-m2.1 | 400+ models incl. GPT-5.3, Claude Opus 4.6, Gemini 3 | varies | Per-model |
+| OpenAI | gpt-4o-mini | gpt-4o, gpt-5.2, gpt-5.3-codex | 128K | Per-tier |
+| Anthropic | claude-3-5-haiku | claude-sonnet-4, claude-opus-4.6 | 200K | Per-tier |
+| Gemini | gemini-1.5-flash | gemini-3-pro, gemini-3-flash | 1M | Per-tier |
+| Groq | moonshotai/kimi-k2-instruct-0905 | openai/gpt-oss-120b, llama-4-maverick, qwen3-32b | 128K | Per-tier |
+| DeepSeek | deepseek-chat | deepseek-reasoner (R1) | 128K | Per-tier |
+| ZenMux | moonshotai/kimi-k2.5 | 59+ models, provider/model format | varies | Per-model |
+| z.ai | glm-4.7 | glm-4.7-flash, glm-4.5-air (Coding Plan) | 128K | Coding Plan / Per-tier |
+| Mistral | mistral-large-latest | mistral-large-3 (675B MoE) | 128K | Per-tier |
+| Fireworks | llama-v3p1-70b-instruct | various open-source models | 128K | Per-tier |
+| Together | Meta-Llama-3.1-70B-Instruct-Turbo | various open-source models | 128K | Per-tier |
+| Azure OpenAI | gpt-4o | enterprise GPT deployments | 128K | Per-deployment |
+| Cerebras | zai-glm-4.7 | gpt-oss-120b (~3000 tok/s), qwen-3-235b | 128K | Per-tier |
+| Generic OpenAI | (user-configured) | any OpenAI-compatible endpoint | varies | Per-provider |
+| Generic Anthropic | (user-configured) | any Anthropic-compatible endpoint | varies | Per-provider |
+
+> **Model data queried from live APIs on Feb 7, 2026.** Cerebras deprecating llama-3.3-70b and qwen-3-32b on Feb 16, 2026.
 
 ## CLI
 
 ```bash
-# Unified provider flag (17 providers supported)
+# Auto mode — no --provider needed, uses hierarchy fallback
+vrlmrag document.pptx
+vrlmrag ./folder --query "Summarize key findings"
+
+# Explicit provider
 vrlmrag --provider sambanova document.pptx
 vrlmrag --provider nebius document.pdf --output report.md
-vrlmrag --provider openrouter ./folder --query "Summarize key findings"
-vrlmrag --provider gemini paper.pdf --model gemini-1.5-pro
+vrlmrag --provider gemini paper.pdf --model gemini-3-pro
 
-# Utility commands
+# Hierarchy management
+vrlmrag --show-hierarchy          # Show fallback order + availability
 vrlmrag --list-providers          # Show all providers + API key status
-vrlmrag --version                 # Print version
-vrlmrag --help                    # Full usage
 
 # RLM tuning
 vrlmrag --provider nebius doc.pptx --max-depth 5 --max-iterations 25
-
-# Backward-compatible aliases
-vrlmrag --samba-nova document.pptx
-vrlmrag --nebius document.pdf
 ```
+
+- **UX:** `--provider` defaults to `auto`. The hierarchy is editable via `PROVIDER_HIERARCHY` in `.env`.
+- **Fallback:** If a provider fails (rate limit, auth, network), the system falls through to the next available provider automatically.
 
 ## Short-term Goals
 

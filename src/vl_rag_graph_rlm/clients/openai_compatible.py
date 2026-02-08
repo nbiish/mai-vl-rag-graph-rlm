@@ -28,23 +28,45 @@ class OpenAICompatibleClient(BaseLM):
         "zai": "https://api.z.ai/api/coding/paas/v4",
     }
 
-    # Recommended cheap SOTA models by provider
+    # Recommended SOTA models by provider (Feb 2026)
     RECOMMENDED_MODELS = {
         "zenmux": {
-            "default": "baidu/ernie-5.0-thinking",
+            "default": "moonshotai/kimi-k2.5",
             "coding": "bytedance/doubao-seed-1.8",
+            "reasoning": "z-ai/glm-4.7",
             "fast": "z-ai/glm-4.7-flash",
         },
         "openrouter": {
             "default": "minimax/minimax-m2.1",
-            "nebius": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "coding": "z-ai/glm-4.7",
-            "free": "solar-pro/solar-pro-3:free",
+            "coding": "devstral/devstral-2",
+            "reasoning": "deepseek/deepseek-v3.2",
+            "free": "xiaomi/mimo-v2-flash",
             "fast": "google/gemini-3-flash-preview",
+        },
+        "groq": {
+            "default": "moonshotai/kimi-k2-instruct-0905",
+            "flagship": "openai/gpt-oss-120b",
+            "fast": "llama-3.3-70b-versatile",
+            "reasoning": "meta-llama/llama-4-maverick-17b-128e-instruct",
+        },
+        "cerebras": {
+            "default": "zai-glm-4.7",
+            "flagship": "gpt-oss-120b",
+            "reasoning": "qwen-3-235b-a22b-instruct-2507",
+        },
+        "sambanova": {
+            "default": "DeepSeek-V3.2",
+            "latest": "DeepSeek-V3.1",
+            "reasoning": "DeepSeek-R1-0528",
+            "flagship": "gpt-oss-120b",
+        },
+        "nebius": {
+            "default": "MiniMaxAI/MiniMax-M2.1",
+            "reasoning": "deepseek-ai/DeepSeek-R1-0528",
+            "coding": "zai-org/GLM-4.7-FP8",
         },
         "zai": {
             "default": "glm-4.7",
-            "coding": "glm-4.7-coding",
             "fast": "glm-4.7-flash",
         },
         "openai": {
@@ -505,21 +527,27 @@ class AzureOpenAIClient(OpenAICompatibleClient):
 
 class GroqClient(OpenAICompatibleClient):
     """
-    Client for Groq API (ultra-fast inference).
+    Client for Groq API (ultra-fast LPU inference).
 
-    Recommended models:
-        - llama-3.3-70b-versatile: Latest Llama 3.3 70B (recommended)
-        - llama-3.1-8b: Fast, cost-effective
-        - mixtral-8x7b-32768: Large context
+    Available models (Feb 2026):
+        - moonshotai/kimi-k2-instruct-0905: Kimi K2 (recommended, strong reasoning)
+        - openai/gpt-oss-120b: GPT-OSS 120B flagship (1200 tok/s)
+        - openai/gpt-oss-20b: GPT-OSS 20B (fast, agentic)
+        - meta-llama/llama-4-maverick-17b-128e-instruct: Llama 4 Maverick
+        - meta-llama/llama-4-scout-17b-16e-instruct: Llama 4 Scout
+        - llama-3.3-70b-versatile: Llama 3.3 70B
+        - qwen/qwen3-32b: Qwen 3 32B
+        - groq/compound: Compound model with tools
 
     Get API key: https://console.groq.com
+    Docs: https://console.groq.com/docs/models
     """
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
         api_key = api_key or os.getenv("GROQ_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "llama-3.3-70b-versatile",
+            model_name=model_name or "moonshotai/kimi-k2-instruct-0905",
             base_url="https://api.groq.com/openai/v1",
             provider="groq",
             **kwargs,
@@ -619,20 +647,23 @@ class SambaNovaClient(OpenAICompatibleClient):
     """
     Client for SambaNova Cloud API.
 
-    Production models (128K context):
-        - DeepSeek-V3.2: Latest DeepSeek V3 (200+ tok/sec)
-        - DeepSeek-V3-0324: DeepSeek V3 March 2024 (250+ tok/sec)
+    Available models (Feb 2026, 128K context unless noted):
+        - DeepSeek-V3.2: DeepSeek V3.2 (200+ tok/sec)
+        - DeepSeek-V3.1: DeepSeek V3.1 (latest)
+        - DeepSeek-V3-0324: DeepSeek V3 March 2024
         - DeepSeek-R1-0528: Reasoning model
         - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
+        - gpt-oss-120b: GPT-OSS 120B flagship
+        - Llama-4-Maverick-17B-128E-Instruct: Llama 4 Maverick
+        - Meta-Llama-3.3-70B-Instruct: Llama 3.3 70B
+        - Qwen3-235B: Qwen 3 235B
+        - Qwen3-32B: Qwen 3 32B
 
     Rate limits (Free tier): 20 RPM, 40 RPD, 200K TPD
     Rate limits (Developer tier): 60 RPM, 12K RPD
 
-    SambaNova Cloud provides fastest inference for open source models
-    with OpenAI-compatible API.
-
     Get API key: https://cloud.sambanova.ai
-    Docs: https://docs.sambanova.ai/cloud/docs/get-started/supported-models
+    Docs: https://docs.sambanova.ai
     """
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
@@ -675,16 +706,15 @@ class NebiusClient(OpenAICompatibleClient):
 
 class CerebrasClient(OpenAICompatibleClient):
     """
-    Client for Cerebras Inference API.
+    Client for Cerebras Inference API (ultra-fast wafer-scale).
 
-    Recommended models:
-        - llama-3.3-70b: Llama 3.3 70B (recommended production model)
-        - llama3.1-8b: Llama 3.1 8B (fast, cost-effective)
-        - qwen-3-32b: Qwen 3 32B
-        - zai-glm-4.7: Z.AI GLM 4.7 (preview)
-
-    Cerebras provides ultra-fast inference on custom wafer-scale hardware
-    with OpenAI-compatible API.
+    Available models (Feb 2026):
+        - zai-glm-4.7: Z.AI GLM 4.7 355B (~1000 tok/s, recommended)
+        - gpt-oss-120b: GPT-OSS 120B (~3000 tok/s)
+        - qwen-3-235b-a22b-instruct-2507: Qwen 3 235B (~1400 tok/s)
+        - llama-3.3-70b: Llama 3.3 70B (DEPRECATED Feb 16, 2026)
+        - qwen-3-32b: Qwen 3 32B (DEPRECATED Feb 16, 2026)
+        - llama3.1-8b: Llama 3.1 8B
 
     Get API key: https://cloud.cerebras.ai
     Docs: https://inference-docs.cerebras.ai
@@ -694,7 +724,7 @@ class CerebrasClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("CEREBRAS_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "llama-3.3-70b",
+            model_name=model_name or "zai-glm-4.7",
             base_url="https://api.cerebras.ai/v1",
             provider="cerebras",
             **kwargs,

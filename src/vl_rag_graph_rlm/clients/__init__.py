@@ -6,6 +6,14 @@ from vl_rag_graph_rlm.clients.anthropic import AnthropicClient, AnthropicCompati
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.clients.gemini import GeminiClient
 from vl_rag_graph_rlm.clients.litellm import LiteLLMClient
+from vl_rag_graph_rlm.clients.hierarchy import (
+    HierarchyClient,
+    get_hierarchy,
+    get_available_providers,
+    resolve_auto_provider,
+    DEFAULT_HIERARCHY,
+    PROVIDER_KEY_MAP,
+)
 from vl_rag_graph_rlm.clients.openai_compatible import (
     AzureOpenAIClient,
     CerebrasClient,
@@ -61,8 +69,8 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> # z.ai (tries Coding Plan endpoint first, falls back to normal)
         >>> client = get_client('zai', api_key='...', model_name='glm-4.7')
 
-        >>> # Groq (fast inference)
-        >>> client = get_client('groq', api_key='...', model_name='llama-3.3-70b-versatile')
+        >>> # Groq (ultra-fast LPU inference)
+        >>> client = get_client('groq', api_key='...', model_name='moonshotai/kimi-k2-instruct-0905')
 
         >>> # Mistral AI
         >>> client = get_client('mistral', api_key='...', model_name='mistral-large-latest')
@@ -83,17 +91,22 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> client = get_client('nebius', api_key='...', model_name='MiniMaxAI/MiniMax-M2.1')
 
         >>> # Cerebras (ultra-fast wafer-scale inference)
-        >>> client = get_client('cerebras', api_key='...', model_name='llama-3.3-70b')
+        >>> client = get_client('cerebras', api_key='...', model_name='zai-glm-4.7')
 
         >>> # Gemini
         >>> client = get_client('gemini', api_key='...', model_name='gemini-1.5-pro')
 
         >>> # LiteLLM (universal - supports 100+ providers)
         >>> client = get_client('litellm', model_name='gpt-4o')
+
+        >>> # Auto (uses provider hierarchy — tries providers in order)
+        >>> client = get_client('auto')  # tries zai → zenmux → openrouter → ...
     """
     provider = provider.lower()
 
-    if provider == "openai":
+    if provider == "auto":
+        return HierarchyClient(**kwargs)
+    elif provider == "openai":
         return OpenAIClient(**kwargs)
     elif provider == "openai_compatible":
         return GenericOpenAIClient(**kwargs)
@@ -137,6 +150,12 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
 __all__ = [
     "BaseLM",
     "get_client",
+    "HierarchyClient",
+    "get_hierarchy",
+    "get_available_providers",
+    "resolve_auto_provider",
+    "DEFAULT_HIERARCHY",
+    "PROVIDER_KEY_MAP",
     "OpenAIClient",
     "GenericOpenAIClient",
     "AzureOpenAIClient",

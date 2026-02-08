@@ -50,14 +50,14 @@ def _get_default_model(provider: str) -> str:
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",
         "gemini": "gemini-1.5-flash",
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "moonshotai/kimi-k2-instruct-0905",  # Kimi K2 on Groq LPU
         "mistral": "mistral-large-latest",
         "fireworks": "accounts/fireworks/models/llama-v3p1-70b-instruct",
         "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
         "deepseek": "deepseek-chat",
-        "sambanova": "DeepSeek-V3.2",  # Latest DeepSeek V3 on SambaNova (200+ tok/sec, 128K context)
+        "sambanova": "DeepSeek-V3.2",  # DeepSeek V3.2 on SambaNova (200+ tok/sec, 128K context)
         "nebius": "MiniMaxAI/MiniMax-M2.1",  # MiniMax M2.1 on Nebius Token Factory
-        "cerebras": "llama-3.3-70b",  # Llama 3.3 70B on Cerebras wafer-scale
+        "cerebras": "zai-glm-4.7",  # GLM 4.7 355B on Cerebras wafer-scale (~1000 tok/s)
     }
     return hardcoded_defaults.get(provider, "gpt-4o-mini")
 
@@ -85,6 +85,10 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",
         "gemini": "gemini-1.5-flash",
+        "groq": "llama-3.3-70b-versatile",  # Fast fallback on Groq LPU
+        "cerebras": "gpt-oss-120b",  # Ultra-fast on Cerebras (~3000 tok/s)
+        "sambanova": "DeepSeek-V3.1",  # Latest DeepSeek on SambaNova
+        "nebius": "zai-org/GLM-4.7-FP8",  # GLM 4.7 on Nebius Token Factory
     }
     return hardcoded_recursive.get(provider, primary_model)
 

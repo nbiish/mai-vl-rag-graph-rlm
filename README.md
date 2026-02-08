@@ -103,25 +103,29 @@ print(result.response)
 
 ## Supported Providers
 
+> Models verified via live API queries on **Feb 7, 2026**.
+
 | Provider | Default Model | Context | Token Limits | Notes |
 |----------|--------------|---------|--------------|-------|
-| `sambanova` | DeepSeek-V3.2 | 128K | **200K TPD** ⚠️ | 200+ tok/s, requires low context budget |
-| `nebius` | MiniMax-M2.1 | 128K | Unlimited | No daily token limits |
-| `openrouter` | minimax-m2.1 | varies | Per-model | 200+ models, pay-per-token |
-| `openai` | gpt-4o-mini | 128K | Per-tier | Generous limits |
-| `anthropic` | claude-3-5-haiku | 200K | Per-tier | Generous limits |
-| `gemini` | gemini-1.5-flash | 1M | Per-tier | Very high context |
-| `groq` | llama-3.3-70b-versatile | 128K | Per-tier | Ultra-fast inference |
-| `deepseek` | deepseek-chat | 128K | Per-tier | Strong reasoning |
-| `mistral` | mistral-large | 128K | Per-tier | Generous limits |
-| `fireworks` | llama-3.1-70b | 128K | Per-tier | Serverless |
-| `together` | llama-3.1-70b-turbo | 128K | Per-tier | Generous limits |
-| `zenmux` | moonshotai/kimi-k2.5 | varies | Per-model | Unified API gateway (59+ models) |
-| `zai` | glm-4.7 | 128K | Per-tier | Zhipu AI (Coding Plan first, then normal) |
-| `azure_openai` | gpt-4o | 128K | Per-deployment | Enterprise |
-| `cerebras` | llama-3.3-70b | 128K | Per-tier | Ultra-fast wafer-scale |
-| `openai_compatible` | user-configured | varies | Per-provider | Generic OpenAI-compatible |
-| `anthropic_compatible` | user-configured | varies | Per-provider | Generic Anthropic-compatible |
+| `sambanova` | DeepSeek-V3.2 | 128K | **200K TPD** ⚠️ | Also: V3.1, gpt-oss-120b, Qwen3-235B, Llama-4-Maverick |
+| `nebius` | MiniMaxAI/MiniMax-M2.1 | 128K | Unlimited | Also: GLM-4.7-FP8, Nemotron-Ultra-253B, DeepSeek-R1 |
+| `openrouter` | minimax/minimax-m2.1 | varies | Per-model | 400+ models incl. GPT-5.3, Claude Opus 4.6, Gemini 3 |
+| `openai` | gpt-4o-mini | 128K | Per-tier | Also: gpt-4o, gpt-5.2, gpt-5.3-codex |
+| `anthropic` | claude-3-5-haiku | 200K | Per-tier | Also: claude-sonnet-4, claude-opus-4.6 |
+| `gemini` | gemini-1.5-flash | 1M | Per-tier | Also: gemini-3-pro, gemini-3-flash |
+| `groq` | moonshotai/kimi-k2-instruct-0905 | 128K | Per-tier | Also: gpt-oss-120b, llama-4-maverick, qwen3-32b |
+| `deepseek` | deepseek-chat | 128K | Per-tier | Also: deepseek-reasoner (R1) |
+| `mistral` | mistral-large-latest | 128K | Per-tier | Also: mistral-large-3 (675B MoE) |
+| `fireworks` | llama-v3p1-70b-instruct | 128K | Per-tier | Serverless open-source models |
+| `together` | Meta-Llama-3.1-70B-Instruct-Turbo | 128K | Per-tier | Open-source model hosting |
+| `zenmux` | moonshotai/kimi-k2.5 | varies | Per-model | 59+ models, provider/model format |
+| `zai` | glm-4.7 | 128K | Coding Plan | Tries Coding Plan first, falls back to normal API |
+| `azure_openai` | gpt-4o | 128K | Per-deployment | Enterprise GPT deployments |
+| `cerebras` | zai-glm-4.7 | 128K | Per-tier | 355B ~1000 tok/s; also gpt-oss-120b (~3000 tok/s) |
+| `openai_compatible` | user-configured | varies | Per-provider | Generic OpenAI-compatible endpoint |
+| `anthropic_compatible` | user-configured | varies | Per-provider | Generic Anthropic-compatible endpoint |
+
+> ⚠️ **Cerebras**: `llama-3.3-70b` and `qwen-3-32b` deprecated Feb 16, 2026. Use `zai-glm-4.7` or `gpt-oss-120b`.
 
 ### Token Budget Architecture
 
@@ -144,14 +148,14 @@ To upgrade SambaNova limits, consider the Developer tier (12K RPD, no TPD limit)
 ## CLI Reference
 
 ```
-usage: vrlmrag [-h] [--version] [--list-providers] [--provider NAME]
-               [--query QUERY] [--output OUTPUT] [--model MODEL]
-               [--max-depth N] [--max-iterations N] [PATH]
+usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
+               [--provider NAME] [--query QUERY] [--output OUTPUT]
+               [--model MODEL] [--max-depth N] [--max-iterations N] [PATH]
 ```
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider NAME` | `-p` | LLM provider (required) |
+| `--provider NAME` | `-p` | LLM provider (default: `auto` — uses hierarchy) |
 | `PATH` | | File or folder to process (PPTX, TXT, MD) |
 | `--query QUERY` | `-q` | Custom query (default: auto-generated) |
 | `--output PATH` | `-o` | Output markdown report path |
@@ -159,9 +163,35 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--provider NAME]
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
 | `--list-providers` | | Show all providers + API key status |
+| `--show-hierarchy` | | Show provider fallback order + availability |
 | `--version` | `-V` | Print version |
 
 Backward-compatible: `--samba-nova PATH`, `--nebius PATH`
+
+### Auto Mode (Provider Hierarchy)
+
+When `--provider` is omitted (or set to `auto`), the system tries providers in configurable order:
+
+```bash
+# Just give it a file — auto picks the best available provider
+vrlmrag presentation.pptx
+
+# Auto mode with a custom query
+vrlmrag ./docs -q "Summarize key findings"
+
+# See which providers are available and in what order
+vrlmrag --show-hierarchy
+```
+
+Default hierarchy: **zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → gemini → openai → anthropic → ...**
+
+If a provider fails (rate limit, auth error, network issue), the system automatically falls through to the next available provider.
+
+Customize the order in `.env`:
+
+```bash
+PROVIDER_HIERARCHY=groq,cerebras,openrouter,zai,zenmux,nebius,sambanova
+```
 
 ## Environment Variables
 
@@ -171,7 +201,17 @@ Copy `.env.example` to `.env` and fill in your API keys:
 cp .env.example .env
 ```
 
-Each provider uses `{PROVIDER}_API_KEY`, with optional `{PROVIDER}_MODEL` and `{PROVIDER}_RECURSIVE_MODEL` overrides.
+Key variables:
+
+```bash
+# Provider hierarchy (auto mode fallback order)
+PROVIDER_HIERARCHY=zai,zenmux,openrouter,cerebras,groq,nebius,sambanova,...
+
+# Per-provider: API key + optional model override
+{PROVIDER}_API_KEY=your_key_here
+{PROVIDER}_MODEL=model-name           # optional
+{PROVIDER}_RECURSIVE_MODEL=model-name  # optional (for recursive calls)
+```
 
 Special provider notes:
 - **z.ai**: Set `ZAI_CODING_PLAN=true` (default) to try Coding Plan endpoint first, falling back to normal endpoint on failure
@@ -205,13 +245,21 @@ See `.env.example` for all options.
 ### Client Factory
 
 ```python
-from vl_rag_graph_rlm.clients import get_client
+from vl_rag_graph_rlm.clients import get_client, HierarchyClient
+
+# Auto — uses provider hierarchy with automatic fallback
+client = get_client('auto')
+result = client.completion('Analyze this document...')
+print(client.active_provider)  # shows which provider handled the call
+
+# Start hierarchy from a specific provider
+client = HierarchyClient(start_provider='groq')
+
+# Explicit provider (no fallback)
+client = get_client('zai', model_name='glm-4.7')
 
 # ZenMux — uses provider/model format
 client = get_client('zenmux', model_name='moonshotai/kimi-k2.5')
-
-# z.ai — tries Coding Plan first, falls back to normal
-client = get_client('zai', model_name='glm-4.7')
 
 # All other providers
 client = get_client('groq')

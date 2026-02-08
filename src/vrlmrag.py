@@ -11,15 +11,18 @@ Full multimodal document analysis pipeline:
   6. Report:   Markdown report generation
 
 Usage:
-    vrlmrag --provider sambanova document.pptx
-    vrlmrag --provider nebius document.pdf --output report.md
-    vrlmrag --provider openrouter ./folder --query "Summarize key concepts"
-    vrlmrag --list-providers
-    vrlmrag --version
+    vrlmrag document.pptx                          # auto: uses provider hierarchy
+    vrlmrag --provider sambanova document.pptx     # explicit provider
+    vrlmrag --provider nebius doc.pdf -o report.md  # with output file
+    vrlmrag ./folder -q "Summarize key concepts"   # auto + custom query
+    vrlmrag --show-hierarchy                       # see fallback order
+    vrlmrag --list-providers                       # see all providers
 
-Short aliases (backward-compatible):
-    vrlmrag --samba-nova document.pptx
-    vrlmrag --nebius document.pptx
+Provider Hierarchy:
+    When --provider is omitted (or set to 'auto'), providers are tried in order:
+    zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → ...
+    Only providers with valid API keys are attempted. Configurable via
+    PROVIDER_HIERARCHY env var in .env.
 """
 
 __version__ = "0.1.0"
@@ -48,6 +51,12 @@ else:
 sys.path.insert(0, str(Path(__file__).parent))
 
 from vl_rag_graph_rlm import VLRAGGraphRLM
+from vl_rag_graph_rlm.clients.hierarchy import (
+    get_hierarchy,
+    get_available_providers,
+    resolve_auto_provider,
+    PROVIDER_KEY_MAP,
+)
 from vl_rag_graph_rlm.rag import (
     CompositeReranker,
     SearchResult,
@@ -340,7 +349,7 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "groq": {
         "env_key": "GROQ_API_KEY",
         "url": "https://console.groq.com",
-        "description": "Groq — Ultra-fast inference (Llama 3.3 70B)",
+        "description": "Groq — Ultra-fast LPU inference (Kimi K2, GPT-OSS-120B, Llama 4)",
         "context_budget": 32000,
     },
     "deepseek": {
@@ -388,7 +397,7 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "cerebras": {
         "env_key": "CEREBRAS_API_KEY",
         "url": "https://cloud.cerebras.ai",
-        "description": "Cerebras — Ultra-fast wafer-scale inference (Llama 3.3 70B)",
+        "description": "Cerebras — Ultra-fast wafer-scale (GLM-4.7, GPT-OSS-120B, Qwen3-235B)",
         "context_budget": 32000,
     },
 }
@@ -405,6 +414,30 @@ def list_providers() -> None:
     print()
     print("Set API keys in .env or via environment variables.")
     print("See .env.example for all configuration options.")
+
+
+def show_hierarchy() -> None:
+    """Print the provider hierarchy with availability status."""
+    hierarchy = get_hierarchy()
+    available = get_available_providers(hierarchy)
+
+    print(f"vrlmrag v{__version__} — Provider Hierarchy\n")
+    print("Providers are tried in order. First available provider is used.")
+    print("Edit PROVIDER_HIERARCHY in .env to customize the order.\n")
+    print(f"{'#':<4} {'Provider':<16} {'Status':<12} {'API Key Env Var'}")
+    print("-" * 60)
+    for i, provider in enumerate(hierarchy, 1):
+        env_key = PROVIDER_KEY_MAP.get(provider, f"{provider.upper()}_API_KEY")
+        if provider in available:
+            status = "✓ READY"
+        else:
+            status = "✗ no key"
+        print(f"{i:<4} {provider:<16} {status:<12} {env_key}")
+
+    print(f"\nAvailable: {len(available)}/{len(hierarchy)} providers ready")
+    if available:
+        print(f"Auto mode will use: {available[0]}")
+    print(f"\nCustomize: PROVIDER_HIERARCHY={','.join(hierarchy)}")
 
 
 def run_analysis(
@@ -426,6 +459,17 @@ def run_analysis(
       5. Knowledge graph extraction via RLM
       6. Query answering via RLM with retrieved context → markdown report
     """
+    # Handle 'auto' provider — resolve from hierarchy
+    is_auto = provider == "auto"
+    if is_auto:
+        try:
+            provider = resolve_auto_provider()
+            print(f"[auto] Resolved provider from hierarchy: {provider}")
+        except RuntimeError as e:
+            print(f"Error: {e}")
+            print("Run 'vrlmrag --show-hierarchy' to see provider status.")
+            sys.exit(1)
+
     if provider not in SUPPORTED_PROVIDERS:
         print(f"Error: Unknown provider '{provider}'")
         print(f"Supported: {', '.join(SUPPORTED_PROVIDERS.keys())}")
@@ -571,6 +615,9 @@ def run_analysis(
     rlm = VLRAGGraphRLM(**rlm_kwargs)
     print(f"  Model: {rlm.model}")
 
+    # If auto mode, set up fallback hierarchy for query errors
+    fallback_hierarchy = get_available_providers() if is_auto else None
+
     # ================================================================
     # Step 4: Build Knowledge Graph
     # ================================================================
@@ -700,6 +747,17 @@ def run_analysis(
             )
             print(f"    RLM answer in {elapsed:.2f}s")
         except Exception as e:
+            # If auto mode, try fallback providers for this query
+            if fallback_hierarchy and len(fallback_hierarchy) > 1:
+                fallback_result = _try_fallback_query(
+                    q, context[:context_budget], fallback_hierarchy,
+                    provider, resolved_model, max_depth, max_iterations,
+                )
+                if fallback_result:
+                    query_results.append(fallback_result)
+                    print(f"    Fallback answer via {fallback_result.get('fallback_provider', '?')}")
+                    continue
+
             query_results.append(
                 {"query": q, "response": f"Error: {e}", "time": 0, "sources": []}
             )
@@ -751,6 +809,46 @@ def run_nebius_analysis(
     return run_analysis("nebius", input_path, query=query, output=output)
 
 
+def _try_fallback_query(
+    query: str,
+    context: str,
+    hierarchy: List[str],
+    failed_provider: str,
+    model: Optional[str],
+    max_depth: int,
+    max_iterations: int,
+) -> Optional[Dict[str, Any]]:
+    """Try fallback providers for a failed query."""
+    for fb_provider in hierarchy:
+        if fb_provider == failed_provider:
+            continue
+        try:
+            fb_kwargs: Dict[str, Any] = {
+                "provider": fb_provider,
+                "temperature": 0.0,
+                "max_depth": max_depth,
+                "max_iterations": max_iterations,
+            }
+            if model:
+                fb_kwargs["model"] = model
+
+            fb_rlm = VLRAGGraphRLM(**fb_kwargs)
+            q_start = time.time()
+            result = fb_rlm.completion(query, context)
+            elapsed = time.time() - q_start
+
+            return {
+                "query": query,
+                "response": result.response,
+                "time": elapsed,
+                "sources": [],
+                "fallback_provider": fb_provider,
+            }
+        except Exception:
+            continue
+    return None
+
+
 def _keyword_search(
     store: "MultimodalVectorStore", query: str, top_k: int = 20
 ) -> List[SearchResult]:
@@ -794,16 +892,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  vrlmrag --provider sambanova presentation.pptx\n"
-            "  vrlmrag --provider nebius document.pdf -o report.md\n"
-            "  vrlmrag --provider openrouter ./docs -q 'Summarize key findings'\n"
-            "  vrlmrag --provider gemini paper.pdf --model gemini-1.5-pro\n"
-            "  vrlmrag --list-providers\n"
+            "  vrlmrag presentation.pptx                           # auto mode\n"
+            "  vrlmrag --provider sambanova presentation.pptx      # explicit provider\n"
+            "  vrlmrag --provider nebius document.pdf -o report.md  # with output\n"
+            "  vrlmrag ./docs -q 'Summarize key findings'          # auto + query\n"
+            "  vrlmrag --provider gemini paper.pdf --model gemini-3-pro\n"
+            "  vrlmrag --show-hierarchy                            # see fallback order\n"
+            "  vrlmrag --list-providers                            # see all providers\n"
+            "\n"
+            "provider hierarchy (auto mode):\n"
+            "  When --provider is omitted, providers are tried in PROVIDER_HIERARCHY order.\n"
+            "  Default: zai → zenmux → openrouter → cerebras → groq → nebius → ...\n"
+            "  Customize in .env: PROVIDER_HIERARCHY=groq,cerebras,openrouter,...\n"
             "\n"
             "backward-compatible aliases:\n"
             "  vrlmrag --samba-nova presentation.pptx\n"
             "  vrlmrag --nebius document.pdf\n"
-            f"\nsupported providers: {provider_names}\n"
+            f"\nsupported providers: auto, {provider_names}\n"
             "\nSet API keys in .env or via environment variables. See .env.example."
         ),
     )
@@ -818,9 +923,15 @@ def main():
     )
 
     parser.add_argument(
+        "--show-hierarchy", action="store_true",
+        help="Show the provider fallback hierarchy and availability",
+    )
+
+    parser.add_argument(
         "--provider", "-p",
         metavar="NAME",
-        help=f"LLM provider to use ({provider_names})",
+        default="auto",
+        help=f"LLM provider to use (default: auto — uses hierarchy). Options: auto, {provider_names}",
     )
 
     parser.add_argument(
@@ -859,9 +970,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Handle --list-providers
+    # Handle --list-providers / --show-hierarchy
     if args.list_providers:
         list_providers()
+        return
+
+    if args.show_hierarchy:
+        show_hierarchy()
         return
 
     # Resolve provider and input from args (support old-style flags)
@@ -874,11 +989,6 @@ def main():
     elif args.nebius and not provider:
         provider = "nebius"
         input_path = args.nebius
-
-    if not provider:
-        parser.print_help()
-        print(f"\nError: --provider is required. Use --list-providers to see options.")
-        sys.exit(1)
 
     if not input_path:
         parser.print_help()
