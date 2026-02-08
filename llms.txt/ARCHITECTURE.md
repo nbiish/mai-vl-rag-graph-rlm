@@ -250,12 +250,13 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
-PROVIDER_HIERARCHY=zai,zenmux,openrouter,cerebras,groq,nebius,sambanova,...
+PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 
 # Provider API keys
 {PROVIDER}_API_KEY=...
 {PROVIDER}_MODEL=...              # Optional: override default model
 {PROVIDER}_RECURSIVE_MODEL=...    # Optional: cheaper model for recursive calls
+{PROVIDER}_FALLBACK_MODEL=...     # Optional: override fallback model for auto-retry
 
 # Provider-specific behavior
 ZAI_CODING_PLAN=true              # Try Coding Plan first (default: true)
@@ -271,7 +272,24 @@ When `--provider` is omitted or set to `auto`, the system tries providers in
 `PROVIDER_HIERARCHY` order, skipping any without API keys. If a provider fails
 (rate limit, auth error, network), it automatically falls through to the next.
 
-Default order: `zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → gemini → ...`
+Default order: `sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...`
 
 This enables deploying the same codebase across environments — whichever
 providers have keys configured will be used automatically.
+
+### Universal Model Fallback
+
+Every provider has a two-tier resilience strategy:
+
+1. **Model fallback** (within same provider): If the primary model fails for
+   any reason (rate limit, token limit, downtime, network error), the client
+   automatically retries with a fallback model on the same provider. Defined in
+   `OpenAICompatibleClient.FALLBACK_MODELS`, overridable per-provider via
+   `{PROVIDER}_FALLBACK_MODEL` env var.
+
+2. **Provider fallback** (hierarchy): If both models on a provider fail, the
+   error propagates up and the hierarchy tries the next provider.
+
+This means a single API call has up to `2 × N` chances to succeed (2 models
+per provider × N providers with keys). The z.ai provider adds a third tier
+(endpoint fallback: Coding Plan → Normal) before model fallback kicks in.

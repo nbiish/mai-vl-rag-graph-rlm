@@ -79,6 +79,24 @@ class OpenAICompatibleClient(BaseLM):
         },
     }
 
+    # Fallback models: if the primary model fails (rate limit, token limit,
+    # downtime, etc.), the client automatically retries with this model.
+    # Override per-provider via {PROVIDER}_FALLBACK_MODEL env var.
+    FALLBACK_MODELS = {
+        "sambanova": "DeepSeek-V3.1",
+        "groq": "llama-3.3-70b-versatile",
+        "cerebras": "gpt-oss-120b",
+        "nebius": "zai-org/GLM-4.7-FP8",
+        "openrouter": "deepseek/deepseek-v3.2",
+        "zenmux": "z-ai/glm-4.7",
+        "zai": "glm-4.5-air",
+        "openai": "gpt-4o",
+        "mistral": "mistral-small-latest",
+        "fireworks": "accounts/fireworks/models/mixtral-8x22b-instruct",
+        "together": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+        "deepseek": "deepseek-reasoner",
+    }
+
     # Environment variable names for API keys
     API_KEY_ENV = {
         "openai": "OPENAI_API_KEY",
@@ -141,14 +159,23 @@ class OpenAICompatibleClient(BaseLM):
             timeout=120.0, max_retries=0, **kwargs
         )
 
+        # Resolve fallback model: env var → FALLBACK_MODELS dict → None
+        fb_env = os.getenv(
+            f"{self.provider.upper()}_FALLBACK_MODEL",
+        )
+        self._fallback_model: str | None = (
+            fb_env or self.FALLBACK_MODELS.get(self.provider)
+        )
+        self._using_fallback = False
+
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
         self.model_input_tokens: dict[str, int] = defaultdict(int)
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self._last_usage: ModelUsageSummary | None = None
 
-    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a synchronous completion call."""
+    def _raw_completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Low-level sync completion (no fallback)."""
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
 
@@ -161,8 +188,8 @@ class OpenAICompatibleClient(BaseLM):
 
         return response.choices[0].message.content
 
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
-        """Make an asynchronous completion call."""
+    async def _raw_acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Low-level async completion (no fallback)."""
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
 
@@ -176,6 +203,38 @@ class OpenAICompatibleClient(BaseLM):
         self._track_usage(response, model, time.time() - start_time)
 
         return response.choices[0].message.content
+
+    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Sync completion with automatic model fallback on any error."""
+        effective = model or self.model_name
+        try:
+            return self._raw_completion(prompt, model=model)
+        except Exception as e:
+            fb = self._fallback_model
+            if not fb or effective == fb:
+                raise  # no fallback configured or already on fallback
+            logger.warning(
+                "%s: %s failed (%s), falling back to %s",
+                self.provider, effective, e, fb,
+            )
+            self._using_fallback = True
+            return self._raw_completion(prompt, model=fb)
+
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Async completion with automatic model fallback on any error."""
+        effective = model or self.model_name
+        try:
+            return await self._raw_acompletion(prompt, model=model, **kwargs)
+        except Exception as e:
+            fb = self._fallback_model
+            if not fb or effective == fb:
+                raise  # no fallback configured or already on fallback
+            logger.warning(
+                "%s: %s failed (%s), falling back to %s",
+                self.provider, effective, e, fb,
+            )
+            self._using_fallback = True
+            return await self._raw_acompletion(prompt, model=fb, **kwargs)
 
     def _prepare_messages(self, prompt: str | list[dict[str, Any]]) -> list[dict[str, str]]:
         """Convert prompt to OpenAI message format."""
@@ -343,8 +402,8 @@ class ZaiClient(OpenAICompatibleClient):
             )
         return self._fallback_async_client
 
-    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a completion call, trying Coding Plan first then falling back."""
+    def _raw_completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Sync completion with Coding Plan → Normal endpoint fallback."""
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
         if not model:
@@ -368,8 +427,8 @@ class ZaiClient(OpenAICompatibleClient):
         self._track_usage(response, model, time.time() - start_time)
         return response.choices[0].message.content
 
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
-        """Make an async completion call, trying Coding Plan first then falling back."""
+    async def _raw_acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Async completion with Coding Plan → Normal endpoint fallback."""
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
         if not model:
@@ -659,7 +718,7 @@ class SambaNovaClient(OpenAICompatibleClient):
 
     Available models (Feb 2026, 128K context unless noted):
         - DeepSeek-V3.2: DeepSeek V3.2 (200+ tok/sec) — default
-        - DeepSeek-V3.1: DeepSeek V3.1 — automatic fallback on V3.2 rate limit
+        - DeepSeek-V3.1: DeepSeek V3.1 — automatic fallback on any error
         - DeepSeek-V3-0324: DeepSeek V3 March 2024
         - DeepSeek-R1-0528: Reasoning model
         - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
@@ -669,9 +728,8 @@ class SambaNovaClient(OpenAICompatibleClient):
         - Qwen3-235B: Qwen 3 235B
         - Qwen3-32B: Qwen 3 32B
 
-    Model fallback: DeepSeek-V3.2 has per-model rate limits. If a 429
-    rate limit is hit, the client automatically retries with DeepSeek-V3.1.
-    Set SAMBANOVA_FALLBACK_MODEL to override the fallback model.
+    Model fallback (inherited from base): DeepSeek-V3.2 → DeepSeek-V3.1
+    Override via SAMBANOVA_FALLBACK_MODEL env var.
 
     Rate limits (Free tier): 20 RPM, 40 RPD, 200K TPD
     Rate limits (Developer tier): 60 RPM, 12K RPD
@@ -682,8 +740,6 @@ class SambaNovaClient(OpenAICompatibleClient):
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
         api_key = api_key or os.getenv("SAMBANOVA_API_KEY")
-        self._fallback_model = os.getenv("SAMBANOVA_FALLBACK_MODEL", "DeepSeek-V3.1")
-        self._using_fallback = False
         super().__init__(
             api_key=api_key,
             model_name=model_name or "DeepSeek-V3.2",
@@ -691,36 +747,6 @@ class SambaNovaClient(OpenAICompatibleClient):
             provider="sambanova",
             **kwargs,
         )
-
-    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a completion call; on 429 rate limit, retry with fallback model."""
-        try:
-            return super().completion(prompt, model=model)
-        except openai.RateLimitError as e:
-            effective = model or self.model_name
-            if effective == self._fallback_model:
-                raise  # already on fallback, nothing to fall back to
-            logger.warning(
-                "SambaNova: %s rate-limited, falling back to %s",
-                effective, self._fallback_model,
-            )
-            self._using_fallback = True
-            return super().completion(prompt, model=self._fallback_model)
-
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
-        """Make an async completion call; on 429 rate limit, retry with fallback model."""
-        try:
-            return await super().acompletion(prompt, model=model, **kwargs)
-        except openai.RateLimitError as e:
-            effective = model or self.model_name
-            if effective == self._fallback_model:
-                raise  # already on fallback, nothing to fall back to
-            logger.warning(
-                "SambaNova: %s rate-limited, falling back to %s",
-                effective, self._fallback_model,
-            )
-            self._using_fallback = True
-            return await super().acompletion(prompt, model=self._fallback_model, **kwargs)
 
 
 class NebiusClient(OpenAICompatibleClient):

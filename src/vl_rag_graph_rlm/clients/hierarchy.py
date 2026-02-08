@@ -11,18 +11,20 @@ logger = logging.getLogger(__name__)
 
 # Default provider hierarchy order.
 # Editable via PROVIDER_HIERARCHY env var (comma-separated).
+# If openai_compatible or anthropic_compatible have API keys configured,
+# they are automatically prepended (user set up a custom endpoint on purpose).
 DEFAULT_HIERARCHY = [
+    "sambanova",
+    "nebius",
+    "groq",
+    "cerebras",
     "zai",
     "zenmux",
     "openrouter",
-    "cerebras",
-    "groq",
-    "nebius",
-    "sambanova",
     "gemini",
+    "deepseek",
     "openai",
     "anthropic",
-    "deepseek",
     "mistral",
     "fireworks",
     "together",
@@ -31,26 +33,33 @@ DEFAULT_HIERARCHY = [
 
 # Map provider names to their API key env var names
 PROVIDER_KEY_MAP = {
+    "sambanova": "SAMBANOVA_API_KEY",
+    "nebius": "NEBIUS_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
     "zai": "ZAI_API_KEY",
     "zenmux": "ZENMUX_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "cerebras": "CEREBRAS_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "nebius": "NEBIUS_API_KEY",
-    "sambanova": "SAMBANOVA_API_KEY",
     "gemini": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
     "together": "TOGETHER_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
+    "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
+    "anthropic_compatible": "ANTHROPIC_COMPATIBLE_API_KEY",
 }
 
 
 def get_hierarchy() -> list[str]:
     """Get provider hierarchy from env var or default.
+
+    If PROVIDER_HIERARCHY is set, that order is used as-is.
+    Otherwise, openai_compatible and anthropic_compatible are
+    automatically prepended if they have API keys configured
+    (the user intentionally set up a custom endpoint).
 
     Returns:
         Ordered list of provider names to try.
@@ -58,7 +67,18 @@ def get_hierarchy() -> list[str]:
     env_val = os.getenv("PROVIDER_HIERARCHY", "").strip()
     if env_val:
         return [p.strip().lower() for p in env_val.split(",") if p.strip()]
-    return list(DEFAULT_HIERARCHY)
+
+    hierarchy = list(DEFAULT_HIERARCHY)
+
+    # Prepend generic SDK providers if configured — they take priority
+    # because the user explicitly set up a custom endpoint.
+    for generic in reversed(["openai_compatible", "anthropic_compatible"]):
+        env_key = PROVIDER_KEY_MAP.get(generic, f"{generic.upper()}_API_KEY")
+        key_val = os.getenv(env_key, "")
+        if key_val and not key_val.startswith("your_"):
+            hierarchy.insert(0, generic)
+
+    return hierarchy
 
 
 def get_available_providers(hierarchy: list[str] | None = None) -> list[str]:
@@ -110,9 +130,12 @@ class HierarchyClient(BaseLM):
 
     The hierarchy is configurable via the PROVIDER_HIERARCHY env var
     (comma-separated provider names) or defaults to:
-        zai → zenmux → openrouter → cerebras → groq → nebius →
-        sambanova → gemini → openai → anthropic → deepseek →
+        sambanova → nebius → groq → cerebras → zai → zenmux →
+        openrouter → gemini → deepseek → openai → anthropic →
         mistral → fireworks → together → azure_openai
+
+    If openai_compatible or anthropic_compatible have API keys set,
+    they are automatically prepended (user set up a custom endpoint).
 
     Providers without API keys are automatically skipped.
 

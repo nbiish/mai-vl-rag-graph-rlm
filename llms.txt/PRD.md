@@ -71,6 +71,28 @@ Every template and integration **must** exercise all six pillars:
 
 > **Model data queried from live APIs on Feb 7, 2026.** Cerebras deprecating llama-3.3-70b and qwen-3-32b on Feb 16, 2026.
 
+## Universal Model Fallback
+
+Every provider has **automatic model fallback** built into the base client class:
+
+1. **Primary model** is attempted first (e.g., `DeepSeek-V3.2` on SambaNova)
+2. On **any error** (rate limit, token limit, downtime, network), the client automatically retries with a **fallback model** on the same provider
+3. If the fallback also fails, the error propagates to the **provider hierarchy** for cross-provider fallback
+
+**Fallback map (overridable via `{PROVIDER}_FALLBACK_MODEL`):**
+- `sambanova`: DeepSeek-V3.2 → DeepSeek-V3.1
+- `groq`: kimi-k2-instruct → llama-3.3-70b-versatile  
+- `cerebras`: zai-glm-4.7 → gpt-oss-120b
+- `nebius`: MiniMax-M2.1 → GLM-4.7-FP8
+- `openrouter`: minimax-m2.1 → deepseek-v3.2
+- `zenmux`: kimi-k2.5 → glm-4.7
+- `zai`: glm-4.7 → glm-4.5-air (plus endpoint fallback: Coding Plan → Normal)
+- `openai`: gpt-4o-mini → gpt-4o
+- `mistral`: mistral-large → mistral-small
+- `deepseek`: deepseek-chat → deepseek-reasoner
+
+**Result:** Up to `2 × N` chances per API call (2 models × N providers with keys).
+
 ## CLI
 
 ```bash
@@ -93,6 +115,7 @@ vrlmrag --provider nebius doc.pptx --max-depth 5 --max-iterations 25
 
 - **UX:** `--provider` defaults to `auto`. The hierarchy is editable via `PROVIDER_HIERARCHY` in `.env`.
 - **Fallback:** If a provider fails (rate limit, auth, network), the system falls through to the next available provider automatically.
+- **SDK priority:** If `OPENAI_COMPATIBLE_API_KEY` or `ANTHROPIC_COMPATIBLE_API_KEY` is set, those custom endpoints are automatically prepended as the highest-priority providers (user explicitly configured a custom SDK endpoint).
 
 ## Short-term Goals
 

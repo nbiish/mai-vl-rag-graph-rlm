@@ -100,7 +100,7 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         >>> client = get_client('litellm', model_name='gpt-4o')
 
         >>> # Auto (uses provider hierarchy — tries providers in order)
-        >>> client = get_client('auto')  # tries zai → zenmux → openrouter → ...
+        >>> client = get_client('auto')  # tries sambanova → nebius → groq → ...
     """
     provider = provider.lower()
 

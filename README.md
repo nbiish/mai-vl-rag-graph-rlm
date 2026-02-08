@@ -183,7 +183,9 @@ vrlmrag ./docs -q "Summarize key findings"
 vrlmrag --show-hierarchy
 ```
 
-Default hierarchy: **zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → gemini → openai → anthropic → ...**
+Default hierarchy: **sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → anthropic → ...**
+
+If you configure `OPENAI_COMPATIBLE_API_KEY` or `ANTHROPIC_COMPATIBLE_API_KEY`, those custom SDK endpoints are automatically prepended as the highest-priority providers.
 
 If a provider fails (rate limit, auth error, network issue), the system automatically falls through to the next available provider.
 
@@ -205,18 +207,19 @@ Key variables:
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
-PROVIDER_HIERARCHY=zai,zenmux,openrouter,cerebras,groq,nebius,sambanova,...
+PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 
 # Per-provider: API key + optional model override
 {PROVIDER}_API_KEY=your_key_here
 {PROVIDER}_MODEL=model-name           # optional
 {PROVIDER}_RECURSIVE_MODEL=model-name  # optional (for recursive calls)
+{PROVIDER}_FALLBACK_MODEL=model-name   # optional (auto-retry on error)
 ```
 
 Special provider notes:
 - **z.ai**: Set `ZAI_CODING_PLAN=true` (default) to try Coding Plan endpoint first, falling back to normal endpoint on failure
 - **ZenMux**: Uses `provider/model-name` format (e.g., `moonshotai/kimi-k2.5`)
-- **SambaNova**: On 429 rate limit, automatically retries with `DeepSeek-V3.1` (V3.2 has per-model limits). Override via `SAMBANOVA_FALLBACK_MODEL`
+- **Model fallback** (all providers): On any error (rate limit, token limit, downtime), every provider automatically retries with a fallback model before escalating to the next provider in the hierarchy. Override via `{PROVIDER}_FALLBACK_MODEL` env var
 
 See `.env.example` for all options.
 

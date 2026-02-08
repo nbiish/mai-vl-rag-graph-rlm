@@ -66,12 +66,26 @@ Device detection patterns in the codebase:
 - Coding Plan models: `glm-4.7`, `glm-4.5-air`
 - GLM-5 expected before Feb 15, 2026
 
+### Universal Model Fallback
+- **All providers** have automatic model fallback: if the primary model fails (rate limit, token limit, downtime, network error, etc.), the client retries with a fallback model on the **same provider**
+- Fallback models are defined in `OpenAICompatibleClient.FALLBACK_MODELS` and can be overridden per-provider via `{PROVIDER}_FALLBACK_MODEL` env var
+- Fallback map:
+  - `sambanova`: DeepSeek-V3.2 → DeepSeek-V3.1
+  - `groq`: kimi-k2-instruct → llama-3.3-70b-versatile
+  - `cerebras`: zai-glm-4.7 → gpt-oss-120b
+  - `nebius`: MiniMax-M2.1 → GLM-4.7-FP8
+  - `openrouter`: minimax-m2.1 → deepseek-v3.2
+  - `zenmux`: kimi-k2.5 → glm-4.7
+  - `zai`: glm-4.7 → glm-4.5-air
+  - `openai`: gpt-4o-mini → gpt-4o
+  - `mistral`: mistral-large → mistral-small
+  - `deepseek`: deepseek-chat → deepseek-reasoner
+- If already on the fallback model and it fails, the error propagates up to the **provider hierarchy** fallback
+
 ### SambaNova
 - **Critical**: 200K TPD (tokens per day) free tier limit
 - Must budget context aggressively: ~8K chars per call
 - Default model: `DeepSeek-V3.2` (128K context, 200+ tok/s)
-- **Model fallback**: On 429 rate limit, `SambaNovaClient` automatically retries with `DeepSeek-V3.1` (V3.2 has per-model rate limits)
-- Override fallback model via `SAMBANOVA_FALLBACK_MODEL` env var
 - Also available: `gpt-oss-120b`, `Qwen3-235B`, `Llama-4-Maverick-17B-128E-Instruct`
 - For unlimited usage, upgrade to Developer tier (12K RPD, no TPD limit)
 
@@ -82,7 +96,8 @@ Device detection patterns in the codebase:
 - Best choice when SambaNova rate-limits are a bottleneck
 
 ### Provider Hierarchy
-- Default order: `zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → gemini → openai → anthropic → deepseek → mistral → fireworks → together → azure_openai`
+- Default order: `sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → anthropic → mistral → fireworks → together → azure_openai`
+- If `openai_compatible` or `anthropic_compatible` have API keys set, they are automatically prepended (highest priority — user set up a custom endpoint)
 - Configurable via `PROVIDER_HIERARCHY` env var (comma-separated)
 - `get_client('auto')` returns a `HierarchyClient` that tries providers in order
 - `HierarchyClient(start_provider='groq')` starts from a specific point in the hierarchy

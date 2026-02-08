@@ -52,6 +52,16 @@
 
 ## Completed (v0.1.x — Feb 2026)
 
+### Universal Model Fallback (Feb 8, 2026)
+- [x] **`FALLBACK_MODELS` dict**: Hardcoded fallback models for 11+ providers in base class
+- [x] **`{PROVIDER}_FALLBACK_MODEL` env var**: Override fallback per-provider
+- [x] **Base class `completion()`/`acompletion()`**: Try primary → catch any Exception → retry with fallback
+- [x] **`_raw_completion()`/`_raw_acompletion()`**: Low-level methods for providers with custom fallback (z.ai endpoint)
+- [x] **SambaNovaClient simplified**: Removed custom overrides, now inherits universal fallback
+- [x] **ZaiClient restructured**: Uses `_raw_completion` for endpoint fallback, base class handles model fallback
+- [x] **Two-tier resilience**: Model fallback (same provider) → Provider hierarchy fallback (next provider)
+- [x] **z.ai three-tier**: Coding Plan endpoint → Normal endpoint → Model fallback → Provider hierarchy
+
 ### Provider Hierarchy & Auto Mode
 - [x] **`HierarchyClient`**: Automatic fallback through configurable provider order
 - [x] **`PROVIDER_HIERARCHY` env var**: Editable comma-separated provider order in `.env`
