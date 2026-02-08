@@ -20,7 +20,7 @@ Usage:
 
 Provider Hierarchy:
     When --provider is omitted (or set to 'auto'), providers are tried in order:
-    zai → zenmux → openrouter → cerebras → groq → nebius → sambanova → ...
+    sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → ...
     Only providers with valid API keys are attempted. Configurable via
     PROVIDER_HIERARCHY env var in .env.
 """
@@ -882,6 +882,479 @@ def _keyword_search(
     return results[:top_k]
 
 
+def _resolve_provider(provider: str) -> tuple[str, bool]:
+    """Resolve provider name, handling 'auto' mode.
+
+    Returns:
+        (resolved_provider_name, is_auto)
+    """
+    is_auto = provider == "auto"
+    if is_auto:
+        try:
+            provider = resolve_auto_provider()
+        except RuntimeError as e:
+            print(f"Error: {e}")
+            print("Run 'vrlmrag --show-hierarchy' to see provider status.")
+            sys.exit(1)
+    if provider not in SUPPORTED_PROVIDERS:
+        print(f"Error: Unknown provider '{provider}'")
+        print(f"Supported: {', '.join(SUPPORTED_PROVIDERS.keys())}")
+        sys.exit(1)
+    return provider, is_auto
+
+
+def _load_knowledge_graph(kg_path: Path) -> str:
+    """Load persisted knowledge graph from disk."""
+    if kg_path.exists():
+        return kg_path.read_text(encoding="utf-8")
+    return ""
+
+
+def _save_knowledge_graph(kg_path: Path, kg_text: str) -> None:
+    """Persist knowledge graph to disk."""
+    kg_path.parent.mkdir(parents=True, exist_ok=True)
+    kg_path.write_text(kg_text, encoding="utf-8")
+
+
+def _merge_knowledge_graphs(existing: str, new_fragment: str) -> str:
+    """Merge a new KG fragment into the existing knowledge graph."""
+    if not existing:
+        return new_fragment
+    if not new_fragment:
+        return existing
+    return f"{existing}\n\n---\n\n{new_fragment}"
+
+
+def run_interactive_session(
+    provider: str,
+    input_path: Optional[str] = None,
+    model: Optional[str] = None,
+    max_depth: int = 3,
+    max_iterations: int = 10,
+    store_dir: Optional[str] = None,
+) -> None:
+    """Run an interactive VL-RAG-Graph-RLM session.
+
+    Loads VL models once at startup and keeps them resident in memory.
+    Supports incremental document addition and continuous querying.
+    The knowledge graph grows across queries and persists to disk.
+
+    Commands (type at the ``vrlmrag>`` prompt):
+        <any text>            — run as a query against loaded documents
+        /add <path>           — add more documents (file or folder)
+        /kg                   — show the current knowledge graph
+        /stats                — show session statistics
+        /save [path]          — save report to file
+        /help                 — show available commands
+        /quit or /exit        — end session
+    """
+    import json as _json
+    import readline  # noqa: F401 — enables arrow-key history in input()
+
+    provider, is_auto = _resolve_provider(provider)
+    prov_info = SUPPORTED_PROVIDERS[provider]
+    context_budget = prov_info["context_budget"]
+
+    api_key = os.getenv(prov_info["env_key"])
+    if not api_key:
+        print(f"Error: {prov_info['env_key']} not set")
+        print(f"Get your API key from: {prov_info['url']}")
+        sys.exit(1)
+
+    resolved_model = model  # explicit --model flag takes priority
+
+    # ----------------------------------------------------------------
+    # Determine persistence directory
+    # ----------------------------------------------------------------
+    if store_dir:
+        session_dir = Path(store_dir)
+    elif input_path:
+        p = Path(input_path)
+        session_dir = (p.parent if p.is_file() else p) / ".vrlmrag_store"
+    else:
+        session_dir = Path.cwd() / ".vrlmrag_store"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    storage_file = str(session_dir / "embeddings.json")
+    kg_file = session_dir / "knowledge_graph.md"
+
+    # ----------------------------------------------------------------
+    # Banner
+    # ----------------------------------------------------------------
+    print("=" * 70)
+    print(f"vrlmrag v{__version__} — Interactive Session")
+    print("=" * 70)
+    print(f"Provider:       {provider}" + (" (auto)" if is_auto else ""))
+    print(f"Model:          {resolved_model or '(auto-detect from env/defaults)'}")
+    print(f"Context budget: {context_budget:,} chars")
+    print(f"Store:          {session_dir}")
+    if input_path:
+        print(f"Input:          {input_path}")
+    print("=" * 70)
+
+    # ----------------------------------------------------------------
+    # Step 1: Load VL models (once)
+    # ----------------------------------------------------------------
+    embedding_model_name = "Qwen/Qwen3-VL-Embedding-2B"
+    reranker_model_name = "Qwen/Qwen3-VL-Reranker-2B"
+
+    embedder = None
+    reranker_vl = None
+    store: Optional["MultimodalVectorStore"] = None
+
+    if HAS_QWEN3VL:
+        import torch
+
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"\n[init] Loading Qwen3-VL Embedding model ({device})...")
+        embedder = create_qwen3vl_embedder(
+            model_name=embedding_model_name, device=device
+        )
+        print(f"  Embedding dim: {embedder.embedding_dim}")
+
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=storage_file,
+        )
+        existing_docs = len(store.documents)
+        if existing_docs:
+            print(f"  Loaded {existing_docs} existing documents from store")
+
+        print("[init] Loading Qwen3-VL Reranker...")
+        reranker_vl = create_qwen3vl_reranker(
+            model_name=reranker_model_name, device=device
+        )
+        print("  Reranker loaded successfully")
+    else:
+        print("\n[init] Qwen3-VL not available — using fallback text reranking")
+        print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
+
+    # ----------------------------------------------------------------
+    # Step 2: Initialize RLM
+    # ----------------------------------------------------------------
+    rlm_kwargs: Dict[str, Any] = {
+        "provider": provider,
+        "temperature": 0.0,
+        "max_depth": max_depth,
+        "max_iterations": max_iterations,
+    }
+    if resolved_model:
+        rlm_kwargs["model"] = resolved_model
+
+    print(f"[init] Initializing RLM ({provider})...")
+    rlm = VLRAGGraphRLM(**rlm_kwargs)
+    print(f"  Model: {rlm.model}")
+
+    fallback_hierarchy = get_available_providers() if is_auto else None
+
+    # ----------------------------------------------------------------
+    # Step 3: Load persisted knowledge graph
+    # ----------------------------------------------------------------
+    knowledge_graph = _load_knowledge_graph(kg_file)
+    if knowledge_graph:
+        print(f"[init] Loaded existing knowledge graph ({len(knowledge_graph):,} chars)")
+
+    # ----------------------------------------------------------------
+    # Step 4: Process initial documents (if provided)
+    # ----------------------------------------------------------------
+    processor = DocumentProcessor()
+    all_chunks: List[dict] = []
+    all_documents: List[dict] = []
+    rrf = ReciprocalRankFusion(k=60)
+    fallback_reranker = CompositeReranker()
+    query_count = 0
+    total_query_time = 0.0
+
+    def _ingest_path(path_str: str) -> int:
+        """Ingest documents from a path, returning count of new embeddings."""
+        nonlocal knowledge_graph
+        docs = processor.process_path(path_str)
+        if isinstance(docs, dict):
+            docs = [docs]
+
+        new_chunks: List[dict] = []
+        for doc in docs:
+            new_chunks.extend(doc.get("chunks", []))
+        all_documents.extend(docs)
+        all_chunks.extend(new_chunks)
+
+        embedded = 0
+        if store is not None and HAS_QWEN3VL:
+            for i, chunk in enumerate(new_chunks):
+                content = chunk.get("content", "")
+                if not content.strip():
+                    continue
+                metadata = {"type": chunk.get("type", "text")}
+                if "slide" in chunk:
+                    metadata["slide"] = chunk["slide"]
+                store.add_text(content=content, metadata=metadata)
+                embedded += 1
+
+            # Embed images
+            for doc in docs:
+                for img_info in doc.get("image_data", []):
+                    try:
+                        temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
+                        with open(temp_path, "wb") as f:
+                            f.write(img_info["blob"])
+                        store.add_image(
+                            image_path=temp_path,
+                            description=f"Image from slide {img_info['slide']}",
+                            metadata={
+                                "type": "image",
+                                "slide": img_info["slide"],
+                                "filename": img_info["filename"],
+                            },
+                        )
+                        embedded += 1
+                    except Exception as e:
+                        print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
+
+        # Build/extend knowledge graph for new documents
+        if new_chunks:
+            kg_char_limit = min(context_budget, 25000)
+            kg_doc_limit = max(2000, kg_char_limit // max(len(docs), 1))
+            kg_context = "\n\n".join(
+                [d.get("content", "")[:kg_doc_limit] for d in docs]
+            )
+            try:
+                kg_result = rlm.completion(
+                    "Extract key concepts, entities, and relationships from this document.",
+                    kg_context[:kg_char_limit],
+                )
+                knowledge_graph = _merge_knowledge_graphs(
+                    knowledge_graph, kg_result.response
+                )
+                _save_knowledge_graph(kg_file, knowledge_graph)
+            except Exception as e:
+                print(f"  Warning: Could not extend knowledge graph: {e}")
+
+        print(f"  Processed {len(docs)} doc(s), {len(new_chunks)} chunks, {embedded} embedded")
+        return embedded
+
+    if input_path:
+        print(f"\n[ingest] Processing: {input_path}")
+        _ingest_path(input_path)
+
+    # ----------------------------------------------------------------
+    # Step 5: Query helper
+    # ----------------------------------------------------------------
+    def _run_query(q: str) -> Dict[str, Any]:
+        """Run a single query against the loaded store + KG."""
+        nonlocal query_count, total_query_time
+        sources_info: List[Dict[str, Any]] = []
+
+        if store is not None and HAS_QWEN3VL:
+            dense_results = store.search(q, top_k=20)
+            keyword_results = _keyword_search(store, q, top_k=20)
+
+            if keyword_results:
+                fused_results = rrf.fuse(
+                    [dense_results, keyword_results], weights=[4.0, 1.0]
+                )
+            else:
+                fused_results = dense_results
+
+            if reranker_vl and fused_results:
+                docs_for_rerank: List[Dict[str, Any]] = []
+                for r in fused_results[:15]:
+                    doc = store.get(r.id)
+                    if doc:
+                        doc_dict: Dict[str, Any] = {"text": doc.content}
+                        if doc.image_path:
+                            doc_dict["image"] = doc.image_path
+                        docs_for_rerank.append(doc_dict)
+
+                reranked_indices = reranker_vl.rerank(
+                    query={"text": q}, documents=docs_for_rerank
+                )
+                reordered = []
+                for idx, score in reranked_indices:
+                    if idx < len(fused_results):
+                        result = fused_results[idx]
+                        result.composite_score = score * 100
+                        reordered.append(result)
+                final_results = reordered[:5]
+            else:
+                final_results = fused_results[:5]
+
+            context_parts = []
+            for i, result in enumerate(final_results):
+                doc = store.get(result.id)
+                if doc:
+                    context_parts.append(
+                        f"[Source {i + 1}] (score: {result.composite_score:.1f})\n{doc.content}"
+                    )
+                    sources_info.append(
+                        {
+                            "content": doc.content[:150],
+                            "score": result.composite_score,
+                            "metadata": doc.metadata,
+                        }
+                    )
+            context = "\n\n---\n\n".join(context_parts)
+        else:
+            search_results = [
+                SearchResult(
+                    id=i,
+                    content=chunk.get("content", ""),
+                    metadata={"type": chunk.get("type", "text")},
+                    semantic_score=1.0,
+                )
+                for i, chunk in enumerate(all_chunks)
+            ]
+            reranked, _ = fallback_reranker.process(
+                q, [r.__dict__ for r in search_results]
+            )
+            reranked.sort(
+                key=lambda x: x.get("composite_score", 0), reverse=True
+            )
+            top_chunks = reranked[:3] if len(reranked) >= 3 else reranked
+            context = "\n\n---\n\n".join(
+                [c.get("content", "") for c in top_chunks]
+            )
+
+        # Prepend KG context if available
+        if knowledge_graph:
+            context = (
+                f"[Knowledge Graph]\n{knowledge_graph[:5000]}\n\n---\n\n{context}"
+            )
+
+        try:
+            q_start = time.time()
+            result = rlm.completion(q, context[:context_budget])
+            elapsed = time.time() - q_start
+            query_count += 1
+            total_query_time += elapsed
+            return {
+                "query": q,
+                "response": result.response,
+                "time": elapsed,
+                "sources": sources_info,
+            }
+        except Exception as e:
+            if fallback_hierarchy and len(fallback_hierarchy) > 1:
+                fallback_result = _try_fallback_query(
+                    q, context[:context_budget], fallback_hierarchy,
+                    provider, resolved_model, max_depth, max_iterations,
+                )
+                if fallback_result:
+                    query_count += 1
+                    total_query_time += fallback_result.get("time", 0)
+                    return fallback_result
+            return {"query": q, "response": f"Error: {e}", "time": 0, "sources": []}
+
+    # ----------------------------------------------------------------
+    # Step 6: Interactive REPL
+    # ----------------------------------------------------------------
+    print("\n" + "=" * 70)
+    print("Interactive session ready. Type queries or commands.")
+    print("Commands: /add <path>  /kg  /stats  /save [path]  /help  /quit")
+    print("=" * 70)
+
+    while True:
+        try:
+            user_input = input("\nvrlmrag> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[session] Goodbye.")
+            break
+
+        if not user_input:
+            continue
+
+        # ---- Commands ----
+        if user_input.lower() in ("/quit", "/exit", "/q"):
+            print("[session] Goodbye.")
+            break
+
+        if user_input.lower() == "/help":
+            print(
+                "Commands:\n"
+                "  <text>            Query loaded documents\n"
+                "  /add <path>       Add more documents (file or folder)\n"
+                "  /kg               Show the current knowledge graph\n"
+                "  /stats            Show session statistics\n"
+                "  /save [path]      Save current KG + session report\n"
+                "  /help             Show this help\n"
+                "  /quit             End session"
+            )
+            continue
+
+        if user_input.lower() == "/kg":
+            if knowledge_graph:
+                print(f"\n--- Knowledge Graph ({len(knowledge_graph):,} chars) ---")
+                print(knowledge_graph[:8000])
+                if len(knowledge_graph) > 8000:
+                    print(f"\n... ({len(knowledge_graph) - 8000:,} more chars)")
+            else:
+                print("No knowledge graph built yet. Add documents first.")
+            continue
+
+        if user_input.lower() == "/stats":
+            doc_count = len(store.documents) if store else len(all_chunks)
+            print(
+                f"\n--- Session Statistics ---\n"
+                f"  Provider:           {provider} (model: {rlm.model})\n"
+                f"  Documents in store: {doc_count}\n"
+                f"  Total chunks:       {len(all_chunks)}\n"
+                f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
+                f"  Queries run:        {query_count}\n"
+                f"  Total query time:   {total_query_time:.2f}s\n"
+                f"  Avg query time:     {(total_query_time / query_count):.2f}s"
+                if query_count else
+                f"\n--- Session Statistics ---\n"
+                f"  Provider:           {provider} (model: {rlm.model})\n"
+                f"  Documents in store: {doc_count}\n"
+                f"  Total chunks:       {len(all_chunks)}\n"
+                f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
+                f"  Queries run:        0\n"
+                f"  Total query time:   0.00s"
+            )
+            continue
+
+        if user_input.lower().startswith("/save"):
+            parts = user_input.split(maxsplit=1)
+            save_path = parts[1] if len(parts) > 1 else str(session_dir / "session_report.md")
+            generator = MarkdownReportGenerator()
+            results = {
+                "provider": provider,
+                "model": rlm.model,
+                "embedding_model": embedding_model_name if HAS_QWEN3VL else "N/A",
+                "reranker_model": reranker_model_name if HAS_QWEN3VL else "N/A",
+                "document_count": len(all_documents),
+                "total_chunks": len(all_chunks),
+                "embedded_count": len(store.documents) if store else 0,
+                "execution_time": total_query_time,
+                "documents": all_documents,
+                "knowledge_graph": knowledge_graph,
+                "queries": [],
+            }
+            report = generator.generate(results, save_path)
+            print(f"  Report saved to: {save_path}")
+            continue
+
+        if user_input.lower().startswith("/add"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                print("Usage: /add <path>")
+                continue
+            add_path = parts[1].strip()
+            if not Path(add_path).exists():
+                print(f"Error: Path not found: {add_path}")
+                continue
+            print(f"[ingest] Processing: {add_path}")
+            _ingest_path(add_path)
+            continue
+
+        # ---- Default: treat as query ----
+        print(f"  Querying...")
+        result = _run_query(user_input)
+        print(f"\n{result['response']}")
+        if result.get("time"):
+            print(f"\n  [{result['time']:.2f}s]")
+        if result.get("sources"):
+            print(f"  [{len(result['sources'])} sources retrieved]")
+
+
 def main():
     provider_names = ", ".join(SUPPORTED_PROVIDERS.keys())
 
@@ -900,13 +1373,19 @@ def main():
             "  vrlmrag --provider sambanova presentation.pptx      # explicit provider\n"
             "  vrlmrag --provider nebius document.pdf -o report.md  # with output\n"
             "  vrlmrag ./docs -q 'Summarize key findings'          # auto + query\n"
-            "  vrlmrag --provider gemini paper.pdf --model gemini-3-pro\n"
+            "  vrlmrag --interactive presentation.pptx             # interactive session\n"
+            "  vrlmrag -i ./codebase                               # load & query continuously\n"
             "  vrlmrag --show-hierarchy                            # see fallback order\n"
             "  vrlmrag --list-providers                            # see all providers\n"
             "\n"
+            "interactive mode:\n"
+            "  Loads VL models once, then lets you query continuously and add more\n"
+            "  documents without reloading. Knowledge graph persists across queries.\n"
+            "  Commands: /add <path>  /kg  /stats  /save  /help  /quit\n"
+            "\n"
             "provider hierarchy (auto mode):\n"
             "  When --provider is omitted, providers are tried in PROVIDER_HIERARCHY order.\n"
-            "  Default: zai → zenmux → openrouter → cerebras → groq → nebius → ...\n"
+            "  Default: sambanova → nebius → groq → cerebras → zai → zenmux → ...\n"
             "  Customize in .env: PROVIDER_HIERARCHY=groq,cerebras,openrouter,...\n"
             "\n"
             "backward-compatible aliases:\n"
@@ -968,6 +1447,16 @@ def main():
         help="Maximum RLM iterations per call (default: 10)",
     )
 
+    parser.add_argument(
+        "--interactive", "-i", action="store_true",
+        help="Start an interactive session (load VL models once, query continuously)",
+    )
+
+    parser.add_argument(
+        "--store-dir",
+        help="Directory for persisting embeddings and knowledge graph (default: .vrlmrag_store next to input)",
+    )
+
     # Backward-compatible aliases (hidden from main help)
     parser.add_argument("--samba-nova", metavar="PATH", help=argparse.SUPPRESS)
     parser.add_argument("--nebius", metavar="PATH", help=argparse.SUPPRESS)
@@ -993,6 +1482,18 @@ def main():
     elif args.nebius and not provider:
         provider = "nebius"
         input_path = args.nebius
+
+    # Interactive mode
+    if args.interactive:
+        run_interactive_session(
+            provider=provider,
+            input_path=input_path,
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            store_dir=args.store_dir,
+        )
+        return
 
     if not input_path:
         parser.print_help()

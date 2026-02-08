@@ -116,3 +116,7 @@ Device detection patterns in the codebase:
 - No specific provider requested → use `get_client('auto')` or `--provider auto` to engage hierarchy
 - Multiple provider templates in same codebase → hierarchy ensures any template works with whichever keys are available
 - Provider rate-limited mid-query → hierarchy auto-falls through to next provider in `run_analysis`
+- Running interactive mode (`-i`) → VL models load once at startup; use `/add` for incremental docs, not full re-runs
+- Knowledge graph should grow across queries → persist to `knowledge_graph.md` in `.vrlmrag_store/`
+- Embeddings already exist in store → `_load()` restores them without re-running VL model
+- Vision RAG accuracy > speed → always prefer Qwen3-VL reranking over text-only fallback when available

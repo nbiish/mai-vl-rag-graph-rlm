@@ -4,6 +4,7 @@
 
 ## In Progress
 
+- [ ] Verify interactive mode end-to-end with persistent KG + incremental document addition
 - [ ] Verify full pipeline end-to-end with Qwen3-VL embedding + reranking + RAG + Graph + RLM
 
 ## Roadmap — v0.2.0
@@ -51,6 +52,17 @@
 - [ ] Rate limiting / retry logic with exponential backoff
 
 ## Completed (v0.1.x — Feb 2026)
+
+### Interactive Mode (Feb 8, 2026)
+- [x] **`--interactive` / `-i` CLI flag**: Persistent session with VL models loaded once
+- [x] **REPL loop**: `/add <path>`, `/kg`, `/stats`, `/save`, `/help`, `/quit` commands
+- [x] **Knowledge graph persistence**: Saved to `knowledge_graph.md`, loaded on session restart
+- [x] **Incremental document addition**: `/add` embeds new docs and extends KG without reloading VL models
+- [x] **KG-augmented queries**: Knowledge graph context prepended to every query for richer answers
+- [x] **Embedding persistence**: `embeddings.json` reloaded on restart (no re-embedding)
+- [x] **`--store-dir` flag**: Custom persistence directory
+- [x] **Provider hierarchy order updated**: sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...
+- [x] **SDK priority**: `openai_compatible` / `anthropic_compatible` auto-prepended if API keys set
 
 ### Universal Model Fallback (Feb 8, 2026)
 - [x] **`FALLBACK_MODELS` dict**: Hardcoded fallback models for 11+ providers in base class

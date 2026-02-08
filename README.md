@@ -54,6 +54,48 @@ vrlmrag --list-providers
 vrlmrag --version
 ```
 
+### Interactive Mode
+
+Load VL models once, then query continuously without reloading. Add more documents on the fly. Knowledge graph persists and grows across queries.
+
+```bash
+# Start interactive session with a document
+vrlmrag --interactive presentation.pptx
+
+# Start with a codebase/folder
+vrlmrag -i ./docs
+
+# Start empty (add documents later via /add)
+vrlmrag -i
+
+# With explicit provider and custom store directory
+vrlmrag -i --provider sambanova ./project --store-dir ./my_store
+```
+
+Inside the session:
+
+```
+vrlmrag> What are the main topics covered?
+  [answer with sources]
+
+vrlmrag> /add ./more_docs/paper.pdf
+  [processes and embeds new document, extends knowledge graph]
+
+vrlmrag> How does the new paper relate to the presentation?
+  [answer using all loaded documents + accumulated knowledge graph]
+
+vrlmrag> /kg
+  [shows the current knowledge graph]
+
+vrlmrag> /stats
+  [shows session statistics: documents, queries, timing]
+
+vrlmrag> /save report.md
+  [saves session report to file]
+
+vrlmrag> /quit
+```
+
 ### Python API — High-Level Pipeline
 
 ```python

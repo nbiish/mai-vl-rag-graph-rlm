@@ -226,6 +226,11 @@ vrlmrag --list-providers               # Show providers + API key status
 vrlmrag --version                      # Print version
 vrlmrag --help                         # Full usage
 
+# Interactive mode (load VL models once, query continuously)
+vrlmrag --interactive <path>           # Load docs, then REPL
+vrlmrag -i ./codebase                  # Load folder interactively
+vrlmrag -i                             # Start empty, /add docs later
+
 # Backward-compatible aliases
 vrlmrag --samba-nova <path>             # Same as --provider sambanova
 vrlmrag --nebius <path>                 # Same as --provider nebius
@@ -242,6 +247,8 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 | `--model MODEL` | `-m` | Override default model |
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
+| `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
+| `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
 | `--show-hierarchy` | | Show provider fallback order + availability |
 | `--list-providers` | | Show all providers + key status |
 | `--version` | `-V` | Print version |
@@ -293,3 +300,35 @@ Every provider has a two-tier resilience strategy:
 This means a single API call has up to `2 × N` chances to succeed (2 models
 per provider × N providers with keys). The z.ai provider adds a third tier
 (endpoint fallback: Coding Plan → Normal) before model fallback kicks in.
+
+### Interactive Mode
+
+The `--interactive` / `-i` flag starts a persistent session that loads VL
+models once and keeps them resident in memory for continuous querying:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Startup (once)                                     │
+│  ├── Load Qwen3-VL Embedding (2B params)            │
+│  ├── Load Qwen3-VL Reranker (2B params)             │
+│  ├── Initialize RLM + provider client               │
+│  ├── Load persisted embeddings (.vrlmrag_store/)    │
+│  └── Load persisted knowledge graph                 │
+├─────────────────────────────────────────────────────┤
+│  REPL Loop                                          │
+│  ├── /add <path> → ingest + embed + extend KG       │
+│  ├── <query>     → search + rerank + RLM answer     │
+│  ├── /kg         → inspect knowledge graph           │
+│  ├── /stats      → session metrics                   │
+│  └── /save       → export report                     │
+└─────────────────────────────────────────────────────┘
+```
+
+**Persistence:** Embeddings are saved to `embeddings.json` and the knowledge
+graph to `knowledge_graph.md` inside `.vrlmrag_store/` (or `--store-dir`).
+Restarting a session in the same directory reloads previously embedded
+documents and the accumulated knowledge graph without re-running the VL model.
+
+**Incremental growth:** Each `/add` extends the vector store and merges new
+entities/relationships into the knowledge graph. Queries automatically use
+the full accumulated context (KG + retrieved sources).
