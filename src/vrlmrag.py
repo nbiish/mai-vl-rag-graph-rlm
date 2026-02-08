@@ -524,6 +524,14 @@ def run_analysis(
     reranker_model_name = "Qwen/Qwen3-VL-Reranker-2B"
     embedded_count = 0
 
+    # Persistence directory — used for embeddings + knowledge graph in all modes
+    _store_path = Path(input_path)
+    if _store_path.is_file():
+        store_dir = _store_path.parent / ".vrlmrag_store"
+    else:
+        store_dir = _store_path / ".vrlmrag_store"
+    store_dir.mkdir(parents=True, exist_ok=True)
+
     if HAS_QWEN3VL:
         import torch
 
@@ -534,41 +542,42 @@ def run_analysis(
         )
         print(f"  Embedding dim: {embedder.embedding_dim}")
 
-        # Create vector store with persistence
-        store_path = Path(input_path)
-        if store_path.is_file():
-            store_dir = store_path.parent / ".vrlmrag_store"
-        else:
-            store_dir = store_path / ".vrlmrag_store"
-        store_dir.mkdir(parents=True, exist_ok=True)
         storage_file = str(store_dir / "embeddings.json")
 
         store = MultimodalVectorStore(
             embedding_provider=embedder,
             storage_path=storage_file,
         )
+        existing_count = len(store.documents)
+        if existing_count:
+            print(f"  Loaded {existing_count} existing embeddings from store")
 
-        # Embed all text chunks
+        # Embed text chunks (dedup: skips already-embedded content)
+        skipped_count = 0
         print(f"\n[3/6] Embedding {len(all_chunks)} chunks with Qwen3-VL...")
         for i, chunk in enumerate(all_chunks):
             content = chunk.get("content", "")
             if not content.strip():
+                continue
+            if store.content_exists(content):
+                skipped_count += 1
                 continue
             metadata = {"type": chunk.get("type", "text")}
             if "slide" in chunk:
                 metadata["slide"] = chunk["slide"]
             store.add_text(content=content, metadata=metadata)
             embedded_count += 1
-            if (i + 1) % 5 == 0 or (i + 1) == len(all_chunks):
-                print(f"  Embedded {i + 1}/{len(all_chunks)} chunks")
+            if (embedded_count) % 5 == 0:
+                print(f"  Embedded {embedded_count} new chunks so far...")
 
-        # Embed any extracted images
+        # Embed any extracted images (dedup handled inside store)
         for doc in documents:
             for img_info in doc.get("image_data", []):
                 try:
                     temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
                     with open(temp_path, "wb") as f:
                         f.write(img_info["blob"])
+                    prev_count = len(store.documents)
                     store.add_image(
                         image_path=temp_path,
                         description=f"Image from slide {img_info['slide']}",
@@ -578,11 +587,15 @@ def run_analysis(
                             "filename": img_info["filename"],
                         },
                     )
-                    embedded_count += 1
+                    if len(store.documents) > prev_count:
+                        embedded_count += 1
+                    else:
+                        skipped_count += 1
                 except Exception as e:
                     print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
 
-        print(f"  Total embedded: {embedded_count} documents")
+        print(f"  New embeddings: {embedded_count} | Skipped (already in store): {skipped_count}")
+        print(f"  Total in store: {len(store.documents)} documents")
         print(f"  Store persisted to: {storage_file}")
 
         # Load reranker
@@ -619,9 +632,14 @@ def run_analysis(
     fallback_hierarchy = get_available_providers() if is_auto else None
 
     # ================================================================
-    # Step 4: Build Knowledge Graph
+    # Step 4: Build / Extend Knowledge Graph (persistent)
     # ================================================================
-    print("\n  Building knowledge graph...")
+    kg_file = store_dir / "knowledge_graph.md"
+    knowledge_graph = _load_knowledge_graph(kg_file)
+    if knowledge_graph:
+        print(f"\n  Loaded existing knowledge graph ({len(knowledge_graph):,} chars)")
+
+    print("\n  Building knowledge graph for new content...")
     kg_char_limit = min(context_budget, 25000)
     kg_doc_limit = max(2000, kg_char_limit // max(len(documents), 1))
     kg_context = "\n\n".join([d.get("content", "")[:kg_doc_limit] for d in documents])
@@ -630,9 +648,13 @@ def run_analysis(
             "Extract key concepts, entities, and relationships from this document.",
             kg_context[:kg_char_limit],
         )
-        knowledge_graph = kg_result.response
+        knowledge_graph = _merge_knowledge_graphs(knowledge_graph, kg_result.response)
+        _save_knowledge_graph(kg_file, knowledge_graph)
+        print(f"  Knowledge graph persisted ({len(knowledge_graph):,} chars)")
     except Exception as e:
-        knowledge_graph = f"Could not build knowledge graph: {e}"
+        if not knowledge_graph:
+            knowledge_graph = f"Could not build knowledge graph: {e}"
+        print(f"  Warning: KG extraction failed: {e}")
 
     # ================================================================
     # Step 5: Run Queries with Qwen3-VL retrieval
@@ -731,6 +753,11 @@ def run_analysis(
             context = "\n\n---\n\n".join(
                 [c.get("content", "") for c in top_chunks]
             )
+
+        # Prepend knowledge graph context for richer answers
+        if knowledge_graph and not knowledge_graph.startswith("Could not"):
+            kg_budget = min(5000, context_budget // 4)
+            context = f"[Knowledge Graph]\n{knowledge_graph[:kg_budget]}\n\n---\n\n{context}"
 
         try:
             q_start = time.time()

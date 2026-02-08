@@ -332,3 +332,27 @@ documents and the accumulated knowledge graph without re-running the VL model.
 **Incremental growth:** Each `/add` extends the vector store and merges new
 entities/relationships into the knowledge graph. Queries automatically use
 the full accumulated context (KG + retrieved sources).
+
+### Universal Persistent Embeddings
+
+Persistence is **not limited to interactive mode** — the default `run_analysis()`
+path also persists and reuses embeddings and the knowledge graph:
+
+```
+.vrlmrag_store/
+├── embeddings.json       # Qwen3-VL embeddings (text + images)
+└── knowledge_graph.md    # Accumulated KG across all runs
+```
+
+**Content-based deduplication:** Every `add_text()` and `add_image()` call in
+`MultimodalVectorStore` hashes the content (SHA-256) and skips re-embedding if
+the content already exists in the store. This means:
+
+- Re-running `vrlmrag ./folder` only embeds new/changed files
+- Any provider/model combo reuses the same persistent store
+- The knowledge graph merges across runs (append, never overwrite)
+- KG context is prepended to every query for richer answers
+
+This works identically whether you use `--provider sambanova`, `--provider auto`,
+or `--interactive` — the `.vrlmrag_store/` directory is the single source of
+truth for all accumulated embeddings and knowledge.

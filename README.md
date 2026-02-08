@@ -96,6 +96,32 @@ vrlmrag> /save report.md
 vrlmrag> /quit
 ```
 
+### Persistent Embeddings & Knowledge Graph
+
+**All modes** (default, interactive, any provider/model combo) automatically persist embeddings and the knowledge graph to `.vrlmrag_store/` next to the input path. Re-running on the same folder or file:
+
+- **Skips already-embedded chunks** — content-based SHA-256 deduplication means only new/changed content gets re-embedded
+- **Merges the knowledge graph** — new entities and relationships are appended, not overwritten
+- **Uses KG context in every query** — the accumulated knowledge graph is prepended to retrieval context for richer answers
+
+```bash
+# First run: embeds everything, builds KG
+vrlmrag ./my-project -q "Summarize the architecture"
+#   New embeddings: 42 | Skipped: 0 | Total in store: 42
+
+# Second run (same folder): skips existing, only embeds new files
+vrlmrag ./my-project -q "What changed since last time?"
+#   New embeddings: 3 | Skipped: 42 | Total in store: 45
+
+# Works with any provider — same persistent store
+vrlmrag --provider nebius ./my-project -q "Explain the auth flow"
+vrlmrag --provider sambanova ./my-project -q "Compare auth approaches"
+```
+
+The `.vrlmrag_store/` directory contains:
+- `embeddings.json` — persisted Qwen3-VL embeddings (text + images)
+- `knowledge_graph.md` — accumulated knowledge graph across all runs
+
 ### Python API — High-Level Pipeline
 
 ```python

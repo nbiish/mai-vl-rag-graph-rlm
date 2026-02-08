@@ -122,6 +122,7 @@ vrlmrag -i                            # Start empty, /add docs later
 - **Fallback:** If a provider fails (rate limit, auth, network), the system falls through to the next available provider automatically.
 - **SDK priority:** If `OPENAI_COMPATIBLE_API_KEY` or `ANTHROPIC_COMPATIBLE_API_KEY` is set, those custom endpoints are automatically prepended as the highest-priority providers (user explicitly configured a custom SDK endpoint).
 - **Interactive mode:** `--interactive` / `-i` loads VL models once, then provides a REPL for continuous querying. Supports `/add <path>` for incremental document addition, `/kg` to inspect the knowledge graph, and `/save` to export reports. Knowledge graph and embeddings persist to disk across sessions.
+- **Persistent embeddings:** All modes persist embeddings and knowledge graph to `.vrlmrag_store/`. Re-runs skip already-embedded content (SHA-256 dedup). The KG merges across runs and is prepended to every query. Works with any provider/model combo.
 
 ## Short-term Goals
 

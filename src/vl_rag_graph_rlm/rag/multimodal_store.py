@@ -3,10 +3,11 @@
 Extends SimpleVectorStore to support Qwen3-VL embeddings for multimodal content.
 """
 
+import hashlib
 import os
 import json
 import logging
-from typing import List, Dict, Any, Optional, Callable, Union
+from typing import List, Dict, Any, Optional, Callable, Set, Union
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -70,11 +71,13 @@ class MultimodalVectorStore:
         self.embedding_provider = embedding_provider
         self.storage_path = storage_path
         self.documents: Dict[str, MultimodalDocument] = {}
+        self._content_hashes: Set[str] = set()
         self.use_qwen_reranker = use_qwen_reranker
         self.reranker = reranker_provider
         
         if storage_path and os.path.exists(storage_path):
             self._load()
+            self._rebuild_content_hashes()
     
     def add_text(
         self,
@@ -97,6 +100,13 @@ class MultimodalVectorStore:
         doc_id = doc_id or f"doc_{len(self.documents)}"
         metadata = metadata or {}
         
+        # Skip if content already embedded (deduplication)
+        content_hash = self._hash_content(content)
+        if content_hash in self._content_hashes:
+            existing_id = self._find_by_hash(content_hash)
+            if existing_id:
+                return existing_id
+        
         # Generate embedding
         embedding = self.embedding_provider.embed_text(
             content,
@@ -111,6 +121,7 @@ class MultimodalVectorStore:
         )
         
         self.documents[doc_id] = doc
+        self._content_hashes.add(content_hash)
         
         if self.storage_path:
             self._save()
@@ -142,6 +153,14 @@ class MultimodalVectorStore:
         metadata["type"] = "image"
         metadata["image_path"] = image_path
         
+        # Skip if image already embedded (deduplication)
+        img_key = f"image:{image_path}:{description or ''}"
+        content_hash = self._hash_content(img_key)
+        if content_hash in self._content_hashes:
+            existing_id = self._find_by_hash(content_hash)
+            if existing_id:
+                return existing_id
+        
         # Generate multimodal embedding
         if description:
             embedding = self.embedding_provider.embed_multimodal(
@@ -166,6 +185,7 @@ class MultimodalVectorStore:
         )
         
         self.documents[doc_id] = doc
+        self._content_hashes.add(content_hash)
         
         if self.storage_path:
             self._save()
@@ -610,6 +630,36 @@ class MultimodalVectorStore:
             return True
         return False
     
+    @staticmethod
+    def _hash_content(content: str) -> str:
+        """Generate a SHA-256 hash of content for deduplication."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def _find_by_hash(self, content_hash: str) -> Optional[str]:
+        """Find a document ID by content hash."""
+        for doc_id, doc in self.documents.items():
+            h = self._hash_content(doc.content)
+            if h == content_hash:
+                return doc_id
+            if doc.image_path:
+                img_key = f"image:{doc.image_path}:{doc.content}"
+                if self._hash_content(img_key) == content_hash:
+                    return doc_id
+        return None
+
+    def _rebuild_content_hashes(self) -> None:
+        """Rebuild the content hash set from loaded documents."""
+        self._content_hashes = set()
+        for doc in self.documents.values():
+            self._content_hashes.add(self._hash_content(doc.content))
+            if doc.image_path:
+                img_key = f"image:{doc.image_path}:{doc.content}"
+                self._content_hashes.add(self._hash_content(img_key))
+
+    def content_exists(self, content: str) -> bool:
+        """Check if content is already in the store (by hash)."""
+        return self._hash_content(content) in self._content_hashes
+
     def _save(self):
         """Persist to disk."""
         data = {

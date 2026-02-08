@@ -19,7 +19,6 @@
 ### RAG Improvements
 - [ ] BM25 keyword search (replace simple token-overlap with rank-bm25)
 - [ ] Persistent vector store with SQLite backend (replace JSON)
-- [ ] Incremental embedding (skip already-embedded chunks on re-run)
 - [ ] Configurable RRF weights via CLI flags
 - [ ] Multi-query retrieval (generate sub-queries for broader recall)
 
@@ -53,12 +52,15 @@
 
 ## Completed (v0.1.x — Feb 2026)
 
-### Interactive Mode (Feb 8, 2026)
+### Universal Persistent Embeddings & Interactive Mode (Feb 8, 2026)
+- [x] **Content-based deduplication (SHA-256)**: `MultimodalVectorStore` skips re-embedding already-stored content
+- [x] **Universal KG persistence**: Knowledge graph saved/merged in both `run_analysis()` and interactive mode
+- [x] **KG-augmented queries in all modes**: Knowledge graph context prepended to every query (not just interactive)
+- [x] **Incremental embedding**: Re-running on same folder only embeds new/changed files
+- [x] **Provider-agnostic store**: Same `.vrlmrag_store/` used regardless of provider/model combo
 - [x] **`--interactive` / `-i` CLI flag**: Persistent session with VL models loaded once
 - [x] **REPL loop**: `/add <path>`, `/kg`, `/stats`, `/save`, `/help`, `/quit` commands
-- [x] **Knowledge graph persistence**: Saved to `knowledge_graph.md`, loaded on session restart
 - [x] **Incremental document addition**: `/add` embeds new docs and extends KG without reloading VL models
-- [x] **KG-augmented queries**: Knowledge graph context prepended to every query for richer answers
 - [x] **Embedding persistence**: `embeddings.json` reloaded on restart (no re-embedding)
 - [x] **`--store-dir` flag**: Custom persistence directory
 - [x] **Provider hierarchy order updated**: sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...

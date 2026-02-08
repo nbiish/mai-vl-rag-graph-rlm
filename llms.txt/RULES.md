@@ -118,5 +118,8 @@ Device detection patterns in the codebase:
 - Provider rate-limited mid-query → hierarchy auto-falls through to next provider in `run_analysis`
 - Running interactive mode (`-i`) → VL models load once at startup; use `/add` for incremental docs, not full re-runs
 - Knowledge graph should grow across queries → persist to `knowledge_graph.md` in `.vrlmrag_store/`
-- Embeddings already exist in store → `_load()` restores them without re-running VL model
+- Embeddings already exist in store → `_load()` restores them without re-running VL model; SHA-256 dedup skips re-embedding
+- Re-running on same folder/file → only new/changed content gets embedded; existing embeddings reused from store
+- Any provider/model combo → same `.vrlmrag_store/` directory; embeddings are provider-agnostic (Qwen3-VL local)
+- KG context in all queries → knowledge graph prepended to retrieval context in both `run_analysis()` and interactive mode
 - Vision RAG accuracy > speed → always prefer Qwen3-VL reranking over text-only fallback when available
