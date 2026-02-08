@@ -1,0 +1,5 @@
+# Collection data (embeddings, KGs) are local — do not commit
+# The directory structure is created at runtime
+*
+!.gitignore
+!.gitkeep

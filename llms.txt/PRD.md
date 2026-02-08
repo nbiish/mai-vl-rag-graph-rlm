@@ -3,7 +3,7 @@
 ## Project Overview
 
 - **Name:** VL-RAG-Graph-RLM (Vision-Language RAG Graph Recursive Language Model)
-- **Version:** 0.1.0
+- **Version:** 0.1.1
 - **Description:** Unified multimodal document analysis framework combining vision-language embeddings, retrieval-augmented generation, knowledge graph extraction, and recursive language model reasoning.
 - **Purpose:** Process documents (PPTX, PDF, TXT, MD) with images through a full multimodal pipeline — embed text and images in a unified vector space, retrieve with hybrid search, rerank with cross-attention, build knowledge graphs, and answer queries with recursive reasoning.
 - **UX:** CLI (`vrlmrag --provider <name> <path>`), Python API (`MultimodalRAGPipeline`, `VLRAGGraphRLM`), and 17 provider templates.
@@ -116,6 +116,15 @@ vrlmrag --provider nebius doc.pptx --max-depth 5 --max-iterations 25
 vrlmrag --interactive presentation.pptx
 vrlmrag -i ./codebase
 vrlmrag -i                            # Start empty, /add docs later
+
+# Collections — named persistent knowledge stores
+vrlmrag -c research --add ./papers/              # add docs to collection
+vrlmrag -c research -q "Key findings?"           # query a collection
+vrlmrag -c research -c code -q "How?"            # blend collections
+vrlmrag -c research -i                           # interactive w/ collection
+vrlmrag --collection-list                        # list all collections
+vrlmrag -c research --collection-info            # show collection details
+vrlmrag -c research --collection-delete          # delete a collection
 ```
 
 - **UX:** `--provider` defaults to `auto`. The hierarchy is editable via `PROVIDER_HIERARCHY` in `.env`.
@@ -123,6 +132,89 @@ vrlmrag -i                            # Start empty, /add docs later
 - **SDK priority:** If `OPENAI_COMPATIBLE_API_KEY` or `ANTHROPIC_COMPATIBLE_API_KEY` is set, those custom endpoints are automatically prepended as the highest-priority providers (user explicitly configured a custom SDK endpoint).
 - **Interactive mode:** `--interactive` / `-i` loads VL models once, then provides a REPL for continuous querying. Supports `/add <path>` for incremental document addition, `/kg` to inspect the knowledge graph, and `/save` to export reports. Knowledge graph and embeddings persist to disk across sessions.
 - **Persistent embeddings:** All modes persist embeddings and knowledge graph to `.vrlmrag_store/`. Re-runs skip already-embedded content (SHA-256 dedup). The KG merges across runs and is prepended to every query. Works with any provider/model combo.
+- **Named collections:** `-c <name>` creates persistent knowledge stores at `collections/<name>/` inside the codebase. Add docs with `--add`, query with `-q`, blend with `-c A -c B`. Fully scriptable — no interaction required. Collections can also back interactive sessions (`-c <name> -i`).
+
+## Named Persistent Collections
+
+Collections are the system's primary mechanism for building reusable, scriptable knowledge bases. They solve the problem of needing to re-embed and re-process documents every time you want to query them.
+
+### Design Goals
+
+1. **Location-independent:** Collections live inside the codebase at `collections/<name>/`. Query from any directory.
+2. **Scriptable:** Every operation is a single CLI command. No interaction required. Pipe-friendly output.
+3. **Blendable:** Merge multiple collections' embeddings and knowledge graphs for cross-domain queries.
+4. **Incremental:** Only new content gets embedded (SHA-256 dedup). KG merges, never overwrites.
+5. **Provider-agnostic:** Embeddings are local Qwen3-VL. Any LLM provider can query any collection.
+
+### Use Cases
+
+| Scenario | Commands |
+|----------|----------|
+| **Research library** | `-c papers --add ./papers/` then `-c papers -q "Summarize findings"` |
+| **Codebase documentation** | `-c code --add ./src/` then `-c code -q "How does auth work?"` |
+| **Cross-domain analysis** | `-c papers -c code -q "How does the code implement the paper?"` |
+| **Meeting knowledge base** | `-c meetings --add ./notes/` after each meeting, query anytime |
+| **CI/CD integration** | Script: `vrlmrag -c docs --add ./docs/ && vrlmrag -c docs -q "..." -o report.md` |
+| **Interactive exploration** | `-c research -i` → load collection, query continuously, `/add` more docs |
+
+### Storage Layout
+
+```
+<project_root>/collections/
+├── research/
+│   ├── collection.json       # metadata (name, description, sources, counts)
+│   ├── embeddings.json       # Qwen3-VL embeddings (text + images)
+│   └── knowledge_graph.md    # accumulated KG across all additions
+├── codebase/
+│   ├── collection.json
+│   ├── embeddings.json
+│   └── knowledge_graph.md
+└── .gitignore                # collection data is local-only
+```
+
+### How It Works
+
+1. **`--add`** processes documents through `DocumentProcessor`, embeds with Qwen3-VL (dedup via SHA-256), extracts KG via RLM, and persists everything to the collection directory.
+2. **`-q`** loads the collection's embeddings and KG, runs the full 6-pillar pipeline (`_run_vl_rag_query()`), and prints/saves the result.
+3. **Blending** (`-c A -c B`) merges vector stores (doc-ID dedup) and knowledge graphs (`---` separator) before running the pipeline.
+4. **`-i`** starts an interactive session using the collection's directory as the `--store-dir`.
+
+## Scripting & Automation
+
+The CLI is designed for scripting. Every command exits cleanly with appropriate exit codes and can be piped or redirected.
+
+```bash
+#!/bin/bash
+# Build a knowledge base from multiple sources
+vrlmrag -c project --add ./docs/ --collection-description "Project documentation"
+vrlmrag -c project --add ./specs/requirements.pdf
+vrlmrag -c project --add ./meeting-notes/
+
+# Generate a report
+vrlmrag -c project -q "Summarize the project status and key decisions" -o status.md
+
+# Cross-reference with code
+vrlmrag -c code --add ./src/
+vrlmrag -c project -c code -q "Are there gaps between specs and implementation?" -o gaps.md
+
+# List what we have
+vrlmrag --collection-list
+```
+
+## Accuracy-First Query Pipeline
+
+All queries — default, interactive, and collection — route through `_run_vl_rag_query()`:
+
+| Stage | Component | Parameters |
+|-------|-----------|------------|
+| 1. Dense search | Qwen3-VL embedding (cosine sim) | `top_k=50`, `_QUERY_INSTRUCTION` |
+| 2. Keyword search | Token-overlap scoring | `top_k=50` |
+| 3. Fusion | Reciprocal Rank Fusion | `k=60`, weights `[4.0, 1.0]` |
+| 4. Reranking | Qwen3-VL cross-attention | `30` candidates → `10` final |
+| 5. KG augmentation | Persisted knowledge graph | Up to `8000` chars |
+| 6. RLM completion | Recursive Language Model | `max_depth=3`, `max_iterations=10` |
+
+Embedding instruction pairing: `_DOCUMENT_INSTRUCTION` for ingestion, `_QUERY_INSTRUCTION` for search.
 
 ## Short-term Goals
 

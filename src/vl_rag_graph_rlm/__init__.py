@@ -60,7 +60,7 @@ from vl_rag_graph_rlm.pipeline import (
     create_pipeline,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     # Unified Pipeline

@@ -7,6 +7,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-08
+
+### Named Persistent Collections
+- **`collections.py` module** — CRUD for named collections: `create_collection`, `list_collections`, `delete_collection`, `load_collection_meta`, `save_collection_meta`, `record_source`, `load_kg`, `save_kg`, `merge_kg`
+- **Collection storage layout** — `collections/<name>/` with `collection.json` (metadata), `embeddings.json` (Qwen3-VL embeddings), `knowledge_graph.md` (accumulated KG)
+- **`-c <name> --add <path>`** — Add documents to a named collection (embed + KG extract + persist)
+- **`-c <name> -q "..."`** — Query a collection via full VL-RAG pipeline (scriptable, non-interactive)
+- **`-c A -c B -q "..."`** — Blend multiple collections: merge vector stores and knowledge graphs for cross-collection queries
+- **`-c <name> -i`** — Interactive session backed by a collection's store directory
+- **`--collection-list`** — List all collections with doc/chunk counts and last-updated timestamps
+- **`--collection-info`** — Detailed info for a collection (sources, embedding count, KG size)
+- **`--collection-delete`** — Delete a collection and all its data
+- **`--collection-description`** — Set description when creating a collection via `--add`
+- **`collections/.gitignore`** — Collection data excluded from version control
+
+### Accuracy-First Query Pipeline
+- **Unified `_run_vl_rag_query()`** — Single source of truth for all query paths (run_analysis, interactive, collections)
+- **Retrieval instruction pairing** — `_DOCUMENT_INSTRUCTION` for ingestion, `_QUERY_INSTRUCTION` for search (Qwen3-VL recommended asymmetric pairing)
+- **Wider retrieval depth** — `top_k=50` dense/keyword, `30` reranker candidates, `10` final results (accuracy over speed)
+- **Structured KG extraction prompt** — Typed entities (Person, Organisation, Concept, Technology) + explicit relationships (`EntityA → rel → EntityB`)
+- **KG budget increased** — Up to 8000 chars (⅓ of context budget) prepended to every query
+- **Eliminated duplicated query logic** — Both `run_analysis()` and interactive mode delegate to shared function
+
+### Universal Persistent Embeddings & Interactive Mode
+- **Content-based deduplication (SHA-256)** — `MultimodalVectorStore` skips re-embedding already-stored content
+- **Universal KG persistence** — Knowledge graph saved/merged in both `run_analysis()` and interactive mode
+- **KG-augmented queries in all modes** — Knowledge graph context prepended to every query
+- **Incremental embedding** — Re-running on same folder only embeds new/changed files
+- **Provider-agnostic store** — Same `.vrlmrag_store/` used regardless of provider/model combo
+- **`--interactive` / `-i` CLI flag** — Persistent session with VL models loaded once
+- **REPL commands** — `/add <path>`, `/kg`, `/stats`, `/save`, `/help`, `/quit`
+- **`--store-dir` flag** — Custom persistence directory
+
+### Universal Model Fallback
+- **`FALLBACK_MODELS` dict** — Hardcoded fallback models for 11+ providers in base class
+- **`{PROVIDER}_FALLBACK_MODEL` env var** — Override fallback per-provider
+- **Two-tier resilience** — Model fallback (same provider) → Provider hierarchy fallback (next provider)
+- **z.ai three-tier** — Coding Plan endpoint → Normal endpoint → Model fallback → Provider hierarchy
+
+### Provider Model Updates (Feb 7-8, 2026)
+- **Groq** → `moonshotai/kimi-k2-instruct-0905` (Kimi K2 on Groq LPU)
+- **Cerebras** → `zai-glm-4.7` (GLM 4.7 355B, ~1000 tok/s)
+- **SambaNova** → DeepSeek-V3.2 default, also V3.1, gpt-oss-120b, Qwen3-235B
+- **Nebius** → MiniMax-M2.1 default, also GLM-4.7-FP8, Nemotron-Ultra-253B
+
+### Security — Local Orchestration (Feb 8, 2026)
+- **ainish-coder deployment** — Local security scripts and git hooks
+- **`.ainish/scripts/sanitize.py`** — Pre-commit secret sanitizer (50+ patterns, auto-replaces secrets with placeholders)
+- **`.ainish/scripts/scan_secrets.sh`** — Pre-push secret scanner (generates SECURITY_REPORT.md)
+- **Pre-commit hook** — Auto-sanitizes staged files before every commit (OWASP ASI04 compliance)
+- **Pre-push hook** — Scans entire repo and blocks push if secrets detected
+- **`SECURITY.md`** — Comprehensive security documentation (secret patterns, best practices, compliance)
+- **Secret patterns covered:** 50+ including AI/LLM providers, cloud credentials, database connections, private keys, local paths
+- **OWASP Agentic Security 2026 compliance:** ASI04 (Information Disclosure), ASI06 (Legacy Crypto warnings)
+- **FIPS 204 awareness:** RSA key detection with ML-DSA migration warnings
+
+### Documentation
+- Comprehensive `llms.txt/` update: README, ARCHITECTURE, PRD, RULES, TODO, CHANGELOG, CONTRIBUTING
+- Collection system fully documented: storage layout, data flow, blending mechanics, metadata schema, API reference
+- Accuracy-first pipeline documented: retrieval parameters, instruction pairing, KG extraction prompt
+- Future roadmap: collection enhancements (import/export, tagging, remote sync), RAG improvements, testing
+
 ## [0.1.0] - 2025-02-07
 
 ### Added
@@ -128,5 +190,6 @@ All 17 provider templates implement the full 6-pillar architecture:
 
 ---
 
-[Unreleased]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nbiish/mai-vl-rag-graph-rlm/releases/tag/v0.1.0

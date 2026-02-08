@@ -14,6 +14,9 @@
 - Use `create_qwen3vl_embedder()` and `create_qwen3vl_reranker()` factory functions from `vl_rag_graph_rlm.rag`
 - Embed both text chunks AND extracted images into the unified vector space
 - Apply hybrid search (dense + keyword) with RRF fusion before reranking
+- Use retrieval-specific embedding instructions: `_DOCUMENT_INSTRUCTION` for ingestion, `_QUERY_INSTRUCTION` for search
+- Use accuracy-first retrieval parameters: `top_k=50` dense/keyword, `30` reranker candidates, `10` final results
+- Route all queries through `_run_vl_rag_query()` — the single source of truth for the full VL-RAG pipeline
 - Use `VLRAGGraphRLM` with `max_depth=3`, `max_iterations=10` as defaults
 - Generate a markdown report with provider metadata, embedding info, knowledge graph, query responses with sources
 - Handle graceful fallback when Qwen3-VL is unavailable — wrap imports in `try/except ImportError` and check `HAS_QWEN3VL`
@@ -22,7 +25,9 @@
 ## Never
 
 - Create a template that only calls `rlm.completion()` without RAG retrieval — that defeats the architecture
-- Skip the reranking stage — always rerank after fusion
+- Skip the reranking stage — always rerank after fusion (Qwen3-VL cross-attention reranking is mandatory when available)
+- Bypass `_run_vl_rag_query()` with inline query logic — all query paths must use the shared function
+- Use generic embedding instructions — always pair `_DOCUMENT_INSTRUCTION` (ingestion) with `_QUERY_INSTRUCTION` (search)
 - Hardcode API keys or secrets in source files
 - Import Qwen3-VL at module level — use lazy imports inside `try/except` blocks
 - Assume a specific device — always detect CUDA/CPU dynamically
@@ -123,3 +128,15 @@ Device detection patterns in the codebase:
 - Any provider/model combo → same `.vrlmrag_store/` directory; embeddings are provider-agnostic (Qwen3-VL local)
 - KG context in all queries → knowledge graph prepended to retrieval context in both `run_analysis()` and interactive mode
 - Vision RAG accuracy > speed → always prefer Qwen3-VL reranking over text-only fallback when available
+- Building a reusable knowledge base → use `-c <name> --add <path>` to create a named collection
+- Querying across multiple knowledge domains → blend collections with `-c A -c B -q "..."`
+- Scripting queries without interaction → use `-c <name> -q "..."` (fully non-interactive, pipe-friendly)
+- Collection data is local → `collections/` is gitignored; do not commit embeddings or KG data
+- Adding docs to a collection → `run_collection_add()` handles create-if-not-exists, embed, KG extract, and `record_source()`
+- Querying a collection → `run_collection_query()` loads/blends stores and KGs, then calls `_run_vl_rag_query()`
+- Blending collections → merge vector stores by doc_id (UUID dedup), merge KGs with `---` separator via `merge_kg()`
+- Collection names → sanitized to filesystem-safe slugs (lowercase, hyphens, underscores only) via `_sanitize_name()`
+- Collection metadata → always update `collection.json` via `save_collection_meta()` which auto-sets `updated` timestamp
+- Collection KG → never overwrite; always merge via `merge_kg(existing, new_fragment)` which appends with separator
+- Collection storage paths → use `_collection_dir()`, `_embeddings_path()`, `_kg_path()` helpers; never construct paths manually
+- Interactive mode with collection → `-c <name> -i` uses the collection directory as `--store-dir`; creates collection if needed

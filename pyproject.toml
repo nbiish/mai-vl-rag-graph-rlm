@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vl-rag-graph-rlm"
-version = "0.1.0"
+version = "0.1.1"
 description = "Vision-Language RAG Graph Recursive Language Models - Multimodal RAG with Qwen3-VL, cheap SOTA LLMs, and graph-based reasoning"
 readme = "README.md"
 requires-python = ">=3.9"

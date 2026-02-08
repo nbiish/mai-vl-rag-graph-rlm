@@ -4,7 +4,7 @@
 
 VL-RAG-Graph-RLM is a unified multimodal document analysis framework combining vision-language embeddings, retrieval-augmented generation, knowledge graph extraction, and recursive language model reasoning.
 
-Version: 0.1.0
+Version: 0.1.1
 License: See project LICENSE file
 
 ## Quick Start for Contributors
@@ -299,17 +299,128 @@ vrlmrag --provider <provider-slug> examples/test.txt -q "Test query"
    - Documentation updates
    - Screenshots if UI changes
 
+## Extending the Collection System
+
+Collections are managed by `src/vl_rag_graph_rlm/collections.py` and wired into the CLI via `src/vrlmrag.py`. To extend or modify collections:
+
+### Collection Manager API
+
+The `collections.py` module provides these functions:
+
+| Function | Description |
+|----------|-------------|
+| `create_collection(name, description)` | Create a new collection directory with metadata |
+| `load_collection_meta(name)` | Load `collection.json` metadata |
+| `save_collection_meta(name, meta)` | Persist metadata (auto-updates `updated` timestamp) |
+| `list_collections()` | Return metadata for all collections on disk |
+| `delete_collection(name)` | Delete a collection and all its data |
+| `collection_exists(name)` | Check if a collection exists |
+| `record_source(name, path, doc_count, chunk_count)` | Record a source addition |
+| `load_kg(name)` / `save_kg(name, text)` | Load/save knowledge graph |
+| `merge_kg(existing, new_fragment)` | Merge KG fragments with `---` separator |
+
+### Adding a New Collection Operation
+
+1. **Add the function** to `collections.py` if it's a storage-level operation
+2. **Add a CLI wrapper** in `vrlmrag.py` (before `main()`, in the collection operations section)
+3. **Add an argparse argument** in `main()` (in the collection arguments section)
+4. **Add dispatch logic** in `main()` (in the collection dispatch section, before interactive/default)
+5. **Update documentation**: ARCHITECTURE.md CLI flags table, PRD.md CLI section, RULES.md if patterns
+
+### Storage Layout
+
+```
+collections/<name>/
+├── collection.json       # metadata (name, description, sources, counts)
+├── embeddings.json       # Qwen3-VL embeddings (text + images)
+└── knowledge_graph.md    # accumulated KG across all additions
+```
+
+### Key Patterns
+
+- **Name sanitization:** All names go through `_sanitize_name()` → lowercase, hyphens/underscores only
+- **Path helpers:** Use `_collection_dir()`, `_embeddings_path()`, `_kg_path()` — never construct paths manually
+- **KG merging:** Always use `merge_kg()` — never overwrite existing KG content
+- **Metadata updates:** Always use `save_collection_meta()` which auto-sets the `updated` timestamp
+- **Dedup:** Embeddings use SHA-256 content hashing via `MultimodalVectorStore.content_exists()`
+
+### Testing Collection Changes
+
+```bash
+# Create a test collection
+vrlmrag -c test --add ./examples/ --collection-description "Test collection"
+
+# Verify it exists
+vrlmrag --collection-list
+vrlmrag -c test --collection-info
+
+# Query it
+vrlmrag -c test -q "What is this about?"
+
+# Clean up
+vrlmrag -c test --collection-delete
+```
+
+## Security Guidelines
+
+This codebase uses **local security orchestration** via ainish-coder. Security is enforced via git hooks — no CI required.
+
+### Pre-Commit Hook (Auto-Sanitization)
+
+Every commit automatically sanitizes secrets in staged files:
+- API keys are replaced with `YOUR_*_API_KEY_HERE` placeholders
+- Local paths (`/Volumes/`, `/Users/`, `/home/`) are anonymized
+- 50+ secret patterns covered (AI providers, cloud, databases, tokens)
+
+**OWASP ASI04 compliance:** Information Disclosure prevention via automated sanitization.
+
+### Pre-Push Hook (Secret Scanning)
+
+Every push triggers a full repository scan:
+- Generates `SECURITY_REPORT.md` with findings
+- Blocks push if secrets detected
+- Warns about legacy RSA keys (FIPS 204 / ML-DSA migration)
+
+**OWASP ASI06 awareness:** Legacy Cryptography detection for post-quantum planning.
+
+### Security Checklist for Contributors
+
+Before submitting a PR:
+
+- [ ] Run `bash .ainish/scripts/scan_secrets.sh` — verify no secrets detected
+- [ ] Review `SECURITY_REPORT.md` — all findings are false positives or fixed
+- [ ] No hardcoded API keys — all use `os.getenv()` from `.env`
+- [ ] No local paths in examples/docs — use `/path/to/your/...` placeholders
+- [ ] No private keys committed — use environment or secure vault
+
+### Handling False Positives
+
+If the scanner flags a non-secret:
+
+1. Verify it's not actually a secret
+2. Add exclusion pattern to `.ainish/scripts/scan_secrets.sh`
+3. Or use inline ignore: `# ainish-ignore: pattern-name`
+
+### Security Resources
+
+- **SECURITY.md**: Full security documentation, secret patterns, compliance notes
+- **`.ainish/scripts/sanitize.py`**: Pre-commit sanitizer implementation
+- **`.ainish/scripts/scan_secrets.sh`**: Pre-push scanner implementation
+
 ## Documentation References
 
-- **PRD.md**: Product requirements, provider specs, short-term goals
-- **RULES.md**: Coding standards, always/never patterns, device detection
-- **ARCHITECTURE.md**: System diagram, component map, CLI reference
-- **TODO.md**: Roadmap, completed items, version planning
+- **SECURITY.md**: Local security orchestration, OWASP compliance, secret patterns
+- **PRD.md**: Product requirements, provider specs, collections, short-term goals
+- **RULES.md**: Coding standards, always/never patterns, collection rules, device detection
+- **ARCHITECTURE.md**: System diagram, component map, collection internals, CLI reference
+- **TODO.md**: Roadmap, collection enhancements, completed items, version planning
 - **CONTRIBUTING.md**: This file
+- **CHANGELOG.md**: Version history, v0.1.1 collections + accuracy pipeline + security
 
 ## Getting Help
 
 - Check existing provider templates for reference patterns
-- Review `llms.txt/RULES.md` for coding standards
-- Examine `src/vrlmrag.py` for CLI integration
+- Review `llms.txt/RULES.md` for coding standards and collection rules
+- Examine `src/vrlmrag.py` for CLI integration and collection dispatch
+- Study `src/vl_rag_graph_rlm/collections.py` for the collection manager API
 - Open an issue for questions or bugs

@@ -28,6 +28,18 @@
 - [ ] Entity deduplication and coreference resolution
 - [ ] Graph-augmented retrieval (traverse graph edges for context expansion)
 
+### Collection Enhancements
+- [ ] `--collection-export <name> <path>` — export a collection as a portable archive (tar.gz)
+- [ ] `--collection-import <path>` — import a collection archive from another machine
+- [ ] `--collection-merge <src> <dst>` — merge one collection into another (embeddings + KG)
+- [ ] `--collection-tag <name> <tag>` — tag collections for organization and filtering
+- [ ] `--collection-search <query>` — search across all collections without specifying names
+- [ ] Collection-level metadata: custom key-value pairs, creation notes, version tracking
+- [ ] Remote collection sync (S3/GCS) — push/pull collections to cloud storage
+- [ ] Collection snapshots — save/restore point-in-time versions
+- [ ] Collection statistics dashboard — embedding distribution, KG entity counts, query history
+- [ ] Automatic collection suggestions — recommend relevant collections based on query content
+
 ### CLI & UX
 - [ ] `--format json` output option (machine-readable results)
 - [ ] `--verbose` / `--quiet` log level control
@@ -35,11 +47,16 @@
 - [ ] `--cache` flag to reuse existing .vrlmrag_store embeddings
 - [ ] Progress bars (tqdm) for embedding and search steps
 - [ ] Streaming output for RLM responses
+- [ ] `--dry-run` flag for collection operations (show what would be added)
+- [ ] Tab completion for collection names in shell
 
 ### Testing & CI
 - [ ] Unit tests for DocumentProcessor (PPTX, TXT, MD)
 - [ ] Unit tests for _keyword_search and RRF fusion
+- [ ] Unit tests for collection CRUD operations (create, list, delete, record_source)
+- [ ] Unit tests for collection blending (merge stores, merge KGs)
 - [ ] Integration test: full pipeline with mock LLM provider
+- [ ] Integration test: collection add → query round-trip
 - [ ] CI pipeline (GitHub Actions) with lint + test
 - [ ] Benchmark suite: embedding speed, search recall, end-to-end latency
 
@@ -51,6 +68,26 @@
 - [ ] Rate limiting / retry logic with exponential backoff
 
 ## Completed (v0.1.x — Feb 2026)
+
+### Named Persistent Collections (Feb 8, 2026)
+- [x] **`collections.py` module**: CRUD for named collections (`create`, `list`, `delete`, `load_meta`, `record_source`)
+- [x] **Collection storage layout**: `collections/<name>/` with `collection.json`, `embeddings.json`, `knowledge_graph.md`
+- [x] **`-c <name> --add <path>`**: Add documents to a named collection (embed + KG extract + persist)
+- [x] **`-c <name> -q "..."`**: Query a collection via full VL-RAG pipeline (scriptable, non-interactive)
+- [x] **`-c A -c B -q "..."`**: Blend multiple collections — merge stores and KGs for cross-collection queries
+- [x] **`-c <name> -i`**: Interactive session backed by a collection's store directory
+- [x] **`--collection-list`**: List all collections with doc/chunk counts and last-updated timestamps
+- [x] **`--collection-info`**: Detailed info for a collection (sources, embedding count, KG size)
+- [x] **`--collection-delete`**: Delete a collection and all its data
+- [x] **`collections/.gitignore`**: Collection data excluded from version control
+
+### Accuracy-First Query Pipeline (Feb 8, 2026)
+- [x] **Unified `_run_vl_rag_query()`**: Single source of truth for all query paths (run_analysis + interactive)
+- [x] **Retrieval instruction pairing**: `_DOCUMENT_INSTRUCTION` for ingestion, `_QUERY_INSTRUCTION` for search
+- [x] **Wider retrieval depth**: `top_k=50` dense/keyword, `30` reranker candidates, `10` final results
+- [x] **Structured KG extraction prompt**: Typed entities + explicit relationships (`EntityA → rel → EntityB`)
+- [x] **KG budget increased**: Up to 8000 chars (⅓ of context budget) prepended to every query
+- [x] **Eliminated duplicated query logic**: Both run_analysis() and interactive mode delegate to shared function
 
 ### Universal Persistent Embeddings & Interactive Mode (Feb 8, 2026)
 - [x] **Content-based deduplication (SHA-256)**: `MultimodalVectorStore` skips re-embedding already-stored content

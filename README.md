@@ -1,6 +1,6 @@
 # VL-RAG-Graph-RLM
 
-**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** (15 CLI providers + 2 generic compatible).
+**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Features **named persistent collections** for building scriptable knowledge bases, **accuracy-first retrieval** with widened parameters, and **universal persistent embeddings** with SHA-256 deduplication.
 
 ## The Six Pillars
 
@@ -52,6 +52,9 @@ vrlmrag --list-providers
 
 # Show version
 vrlmrag --version
+
+# Security check (before committing)
+bash .ainish/scripts/scan_secrets.sh
 ```
 
 ### Interactive Mode
@@ -121,6 +124,41 @@ vrlmrag --provider sambanova ./my-project -q "Compare auth approaches"
 The `.vrlmrag_store/` directory contains:
 - `embeddings.json` — persisted Qwen3-VL embeddings (text + images)
 - `knowledge_graph.md` — accumulated knowledge graph across all runs
+
+### Collections (Named Persistent Knowledge Stores)
+
+Collections let you build named, persistent knowledge bases that can be queried from anywhere — no matter what directory you're in. Documents are embedded with Qwen3-VL, knowledge graphs are extracted and merged, and everything is stored inside this codebase at `collections/<name>/`.
+
+```bash
+# Create a collection and add documents
+vrlmrag -c research --add ./papers/
+vrlmrag -c research --add ./notes/meeting.md
+
+# Query a collection (fully scriptable — no interaction needed)
+vrlmrag -c research -q "What are the key findings across all papers?"
+
+# Blend multiple collections in a single query
+vrlmrag -c research -c codebase -q "How does the code implement the paper's algorithm?"
+
+# Interactive session backed by a collection
+vrlmrag -c research -i
+
+# List all collections
+vrlmrag --collection-list
+
+# Show detailed collection info
+vrlmrag -c research --collection-info
+
+# Delete a collection
+vrlmrag -c research --collection-delete
+```
+
+Collections are stored at `collections/<name>/` inside the project root:
+- `collection.json` — metadata (name, description, sources, counts)
+- `embeddings.json` — Qwen3-VL embeddings (text + images)
+- `knowledge_graph.md` — accumulated KG across all additions
+
+Every query against a collection goes through the full 6-pillar pipeline: Qwen3-VL dense search → keyword search → RRF fusion → Qwen3-VL reranking → KG augmentation → RLM recursive completion.
 
 ### Python API — High-Level Pipeline
 
@@ -218,18 +256,29 @@ To upgrade SambaNova limits, consider the Developer tier (12K RPD, no TPD limit)
 ```
 usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
                [--provider NAME] [--query QUERY] [--output OUTPUT]
-               [--model MODEL] [--max-depth N] [--max-iterations N] [PATH]
+               [--model MODEL] [--max-depth N] [--max-iterations N]
+               [--interactive] [--store-dir DIR] [--collection NAME]
+               [--add PATH] [--collection-list] [--collection-info]
+               [--collection-delete] [--collection-description TEXT] [PATH]
 ```
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider NAME` | `-p` | LLM provider (default: `auto` — uses hierarchy) |
-| `PATH` | | File or folder to process (PPTX, TXT, MD) |
+| `PATH` | | File or folder to process (PPTX, PDF, TXT, MD) |
 | `--query QUERY` | `-q` | Custom query (default: auto-generated) |
 | `--output PATH` | `-o` | Output markdown report path |
 | `--model MODEL` | `-m` | Override default model |
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
+| `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
+| `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
+| `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
+| `--add PATH` | | Add documents at PATH to the specified collection(s) |
+| `--collection-list` | | List all available collections |
+| `--collection-info` | | Show detailed info for the specified collection |
+| `--collection-delete` | | Delete the specified collection and all its data |
+| `--collection-description TEXT` | | Description for a new collection (used with `--add`) |
 | `--list-providers` | | Show all providers + API key status |
 | `--show-hierarchy` | | Show provider fallback order + availability |
 | `--version` | `-V` | Print version |
@@ -293,20 +342,49 @@ See `.env.example` for all options.
 
 ## How It Works
 
+### Three Operating Modes
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| **Default** | `vrlmrag <path>` | Process docs → embed → query → report |
+| **Interactive** | `vrlmrag -i <path>` | Load VL models once, query continuously, `/add` docs on the fly |
+| **Collection** | `vrlmrag -c <name> -q "..."` | Query named persistent knowledge stores, blend multiple collections |
+
+### Pipeline Flow
+
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
 │  Documents   │ →  │  Qwen3-VL    │ →  │ Hybrid Search│ →  │  RLM         │
-│  PPTX/TXT/MD │    │  Embedding   │    │ + RRF Fusion │    │  Recursive   │
-│  + Images    │    │  (2B, local) │    │ + Reranking  │    │  Reasoning   │
+│  PPTX/PDF/   │    │  Embedding   │    │ + RRF Fusion │    │  Recursive   │
+│  TXT/MD/IMG  │    │  (2B, local) │    │ + Reranking  │    │  Reasoning   │
 └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
-                           ↓                    ↓                    ↓
-                    Unified Vector       Retrieved Context    Markdown Report
-                    Space (text+img)     with Scores          + Knowledge Graph
+       │                   ↓                    ↓                    ↓
+       │            Unified Vector       Retrieved Context    Markdown Report
+       │            Space (text+img)     + Knowledge Graph    + Sources
+       │                   │
+       ▼                   ▼
+┌──────────────┐    ┌──────────────┐
+│  Persistence │    │  Collections │
+│  .vrlmrag_   │    │  collections/│
+│  store/      │    │  <name>/     │
+│  (path-local)│    │  (portable)  │
+└──────────────┘    └──────────────┘
 ```
+
+All queries — default, interactive, and collection — route through `_run_vl_rag_query()`:
+
+| Stage | Component | Parameters |
+|-------|-----------|------------|
+| 1. Dense search | Qwen3-VL embedding (cosine sim) | `top_k=50`, `_QUERY_INSTRUCTION` |
+| 2. Keyword search | Token-overlap scoring | `top_k=50` |
+| 3. Fusion | Reciprocal Rank Fusion | `k=60`, weights `[4.0, 1.0]` |
+| 4. Reranking | Qwen3-VL cross-attention | `30` candidates → `10` final |
+| 5. KG augmentation | Persisted knowledge graph | Up to `8000` chars |
+| 6. RLM completion | Recursive Language Model | `max_depth=3`, `max_iterations=10` |
 
 ### RLM Workflow
 
-1. **Context Analysis** — RLM analyzes retrieved context
+1. **Context Analysis** — RLM analyzes retrieved context + knowledge graph
 2. **Code Generation** — Generates Python code to explore the data
 3. **Safe Execution** — Runs code in a RestrictedPython sandbox
 4. **Recursive Calls** — Breaks complex tasks into sub-tasks via `recursive_llm()`
@@ -419,6 +497,17 @@ embedder = create_qwen3vl_embedder(device="cpu")
 ```bash
 # Known issue — migration to google-genai planned for v0.2.0
 ```
+
+## Documentation
+
+- **[README.md](README.md)** (this file): Quick start, CLI reference, API docs
+- **[llms.txt/README.md](llms.txt/README.md)**: Documentation index, what's new, navigation
+- **[llms.txt/PRD.md](llms.txt/PRD.md)**: Product requirements, architecture, CLI examples
+- **[llms.txt/ARCHITECTURE.md](llms.txt/ARCHITECTURE.md)**: System diagram, component map, pipeline flow
+- **[llms.txt/CONTRIBUTING.md](llms.txt/CONTRIBUTING.md)**: Adding providers, extending collections, testing
+- **[llms.txt/TODO.md](llms.txt/TODO.md)**: Roadmap, planned features, completed items
+- **[SECURITY.md](SECURITY.md)**: Local security orchestration, secret scanning, OWASP compliance
+- **[llms.txt/CHANGELOG.md](llms.txt/CHANGELOG.md)**: Version history
 
 ## License
 

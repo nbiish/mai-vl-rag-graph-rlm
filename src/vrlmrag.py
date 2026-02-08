@@ -18,6 +18,14 @@ Usage:
     vrlmrag --show-hierarchy                       # see fallback order
     vrlmrag --list-providers                       # see all providers
 
+Collections (named persistent knowledge stores):
+    vrlmrag -c research --add ./papers/            # add docs to collection
+    vrlmrag -c research -q "Key findings?"         # query a collection
+    vrlmrag -c research -c code -q "How?"          # blend multiple collections
+    vrlmrag -c research -i                         # interactive w/ collection
+    vrlmrag --collection-list                      # list all collections
+    vrlmrag -c research --collection-info          # show collection details
+
 Provider Hierarchy:
     When --provider is omitted (or set to 'auto'), providers are tried in order:
     sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → ...
@@ -25,7 +33,7 @@ Provider Hierarchy:
     PROVIDER_HIERARCHY env var in .env.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import os
 import sys
@@ -78,6 +86,23 @@ try:
     HAS_QWEN3VL = True
 except ImportError:
     HAS_QWEN3VL = False
+
+from vl_rag_graph_rlm.collections import (
+    collection_exists,
+    create_collection,
+    load_collection_meta,
+    save_collection_meta,
+    list_collections as _list_collections_meta,
+    delete_collection,
+    record_source,
+    load_kg as collection_load_kg,
+    save_kg as collection_save_kg,
+    merge_kg as collection_merge_kg,
+    _embeddings_path as collection_embeddings_path,
+    _kg_path as collection_kg_path,
+    _collection_dir,
+    COLLECTIONS_ROOT,
+)
 
 # Optional PPTX support
 try:
@@ -565,7 +590,10 @@ def run_analysis(
             metadata = {"type": chunk.get("type", "text")}
             if "slide" in chunk:
                 metadata["slide"] = chunk["slide"]
-            store.add_text(content=content, metadata=metadata)
+            store.add_text(
+                content=content, metadata=metadata,
+                instruction=_DOCUMENT_INSTRUCTION,
+            )
             embedded_count += 1
             if (embedded_count) % 5 == 0:
                 print(f"  Embedded {embedded_count} new chunks so far...")
@@ -586,6 +614,7 @@ def run_analysis(
                             "slide": img_info["slide"],
                             "filename": img_info["filename"],
                         },
+                        instruction=_DOCUMENT_INSTRUCTION,
                     )
                     if len(store.documents) > prev_count:
                         embedded_count += 1
@@ -645,7 +674,7 @@ def run_analysis(
     kg_context = "\n\n".join([d.get("content", "")[:kg_doc_limit] for d in documents])
     try:
         kg_result = rlm.completion(
-            "Extract key concepts, entities, and relationships from this document.",
+            _KG_EXTRACTION_PROMPT,
             kg_context[:kg_char_limit],
         )
         knowledge_graph = _merge_knowledge_graphs(knowledge_graph, kg_result.response)
@@ -668,127 +697,30 @@ def run_analysis(
             "Summarize the key concepts presented.",
         ]
 
-    print(f"\n[6/6] Running {len(queries_to_run)} queries with RAG retrieval...")
+    print(f"\n[6/6] Running {len(queries_to_run)} queries with full VL-RAG pipeline...")
     query_results: List[Dict[str, Any]] = []
     rrf = ReciprocalRankFusion(k=60)
     fallback_reranker = CompositeReranker()
 
     for q in queries_to_run:
         print(f"\n  Query: {q}")
-        sources_info: List[Dict[str, Any]] = []
-
-        if store is not None and HAS_QWEN3VL:
-            # --- Full Qwen3-VL RAG pipeline ---
-            dense_results = store.search(q, top_k=20)
-            print(f"    Dense search: {len(dense_results)} results")
-
-            keyword_results = _keyword_search(store, q, top_k=20)
-            print(f"    Keyword search: {len(keyword_results)} results")
-
-            if keyword_results:
-                fused_results = rrf.fuse(
-                    [dense_results, keyword_results], weights=[4.0, 1.0]
-                )
-            else:
-                fused_results = dense_results
-            print(f"    After RRF fusion: {len(fused_results)} results")
-
-            if reranker_vl and fused_results:
-                docs_for_rerank: List[Dict[str, Any]] = []
-                for r in fused_results[:15]:
-                    doc = store.get(r.id)
-                    if doc:
-                        doc_dict: Dict[str, Any] = {"text": doc.content}
-                        if doc.image_path:
-                            doc_dict["image"] = doc.image_path
-                        docs_for_rerank.append(doc_dict)
-
-                reranked_indices = reranker_vl.rerank(
-                    query={"text": q}, documents=docs_for_rerank
-                )
-                reordered = []
-                for idx, score in reranked_indices:
-                    if idx < len(fused_results):
-                        result = fused_results[idx]
-                        result.composite_score = score * 100
-                        reordered.append(result)
-                final_results = reordered[:5]
-                print(f"    After Qwen3-VL reranking: {len(final_results)} results")
-            else:
-                final_results = fused_results[:5]
-
-            context_parts = []
-            for i, result in enumerate(final_results):
-                doc = store.get(result.id)
-                if doc:
-                    context_parts.append(
-                        f"[Source {i + 1}] (score: {result.composite_score:.1f})\n{doc.content}"
-                    )
-                    sources_info.append(
-                        {
-                            "content": doc.content[:150],
-                            "score": result.composite_score,
-                            "metadata": doc.metadata,
-                        }
-                    )
-            context = "\n\n---\n\n".join(context_parts)
-        else:
-            # --- Fallback: CompositeReranker without embeddings ---
-            search_results = [
-                SearchResult(
-                    id=i,
-                    content=chunk.get("content", ""),
-                    metadata={"type": chunk.get("type", "text")},
-                    semantic_score=1.0,
-                )
-                for i, chunk in enumerate(all_chunks)
-            ]
-            reranked, _ = fallback_reranker.process(
-                q, [r.__dict__ for r in search_results]
-            )
-            reranked.sort(
-                key=lambda x: x.get("composite_score", 0), reverse=True
-            )
-            top_chunks = reranked[:3] if len(reranked) >= 3 else reranked
-            context = "\n\n---\n\n".join(
-                [c.get("content", "") for c in top_chunks]
-            )
-
-        # Prepend knowledge graph context for richer answers
-        if knowledge_graph and not knowledge_graph.startswith("Could not"):
-            kg_budget = min(5000, context_budget // 4)
-            context = f"[Knowledge Graph]\n{knowledge_graph[:kg_budget]}\n\n---\n\n{context}"
-
-        try:
-            q_start = time.time()
-            result = rlm.completion(q, context[:context_budget])
-            elapsed = time.time() - q_start
-
-            query_results.append(
-                {
-                    "query": q,
-                    "response": result.response,
-                    "time": elapsed,
-                    "sources": sources_info,
-                }
-            )
-            print(f"    RLM answer in {elapsed:.2f}s")
-        except Exception as e:
-            # If auto mode, try fallback providers for this query
-            if fallback_hierarchy and len(fallback_hierarchy) > 1:
-                fallback_result = _try_fallback_query(
-                    q, context[:context_budget], fallback_hierarchy,
-                    provider, resolved_model, max_depth, max_iterations,
-                )
-                if fallback_result:
-                    query_results.append(fallback_result)
-                    print(f"    Fallback answer via {fallback_result.get('fallback_provider', '?')}")
-                    continue
-
-            query_results.append(
-                {"query": q, "response": f"Error: {e}", "time": 0, "sources": []}
-            )
-            print(f"    Error: {e}")
+        qr = _run_vl_rag_query(
+            q,
+            store=store,
+            reranker_vl=reranker_vl,
+            rrf=rrf,
+            fallback_reranker=fallback_reranker,
+            all_chunks=all_chunks,
+            knowledge_graph=knowledge_graph,
+            context_budget=context_budget,
+            rlm=rlm,
+            fallback_hierarchy=fallback_hierarchy,
+            provider=provider,
+            resolved_model=resolved_model,
+            max_depth=max_depth,
+            max_iterations=max_iterations,
+        )
+        query_results.append(qr)
 
     # ================================================================
     # Compile Results & Generate Report
@@ -907,6 +839,204 @@ def _keyword_search(
 
     results.sort(key=lambda x: x.keyword_score, reverse=True)
     return results[:top_k]
+
+
+# ── Retrieval-specific embedding instructions ──────────────────────────
+# Qwen3-VL embedding quality improves significantly when the instruction
+# matches the task.  "Represent the user's input." is the default for
+# document ingestion; retrieval queries need a retrieval-oriented prompt.
+_QUERY_INSTRUCTION = (
+    "Find passages that are relevant to and answer the following query."
+)
+_DOCUMENT_INSTRUCTION = "Represent this document for retrieval."
+
+# ── Knowledge-graph extraction prompt ──────────────────────────────────
+_KG_EXTRACTION_PROMPT = (
+    "You are a knowledge-graph extraction engine. Analyse the document below "
+    "and produce a structured knowledge graph in Markdown.\n\n"
+    "For every entity you find, output a bullet under **Entities** with its "
+    "name, type (Person, Organisation, Concept, Technology, Location, Event, "
+    "Metric, etc.), and a one-line description.\n\n"
+    "For every relationship between entities, output a bullet under "
+    "**Relationships** in the form:\n"
+    "  - EntityA → relationship → EntityB (brief context)\n\n"
+    "Group entities by type. Be exhaustive — capture every meaningful concept, "
+    "term, and connection. Prefer precision over brevity."
+)
+
+# ── Accuracy-first retrieval parameters ────────────────────────────────
+# These are intentionally wide — we prioritise recall and reranking
+# accuracy over speed.
+_DENSE_TOP_K = 50          # dense (Qwen3-VL embedding) retrieval depth
+_KEYWORD_TOP_K = 50        # keyword retrieval depth
+_RERANK_CANDIDATES = 30    # candidates sent to Qwen3-VL cross-attention reranker
+_FINAL_RESULTS = 10        # top reranked results used as context for the RLM
+
+
+def _run_vl_rag_query(
+    query: str,
+    *,
+    store: Optional["MultimodalVectorStore"],
+    reranker_vl: Optional["Qwen3VLRerankerProvider"],
+    rrf: "ReciprocalRankFusion",
+    fallback_reranker: "CompositeReranker",
+    all_chunks: List[dict],
+    knowledge_graph: str,
+    context_budget: int,
+    rlm: "VLRAGGraphRLM",
+    fallback_hierarchy: Optional[List[str]],
+    provider: str,
+    resolved_model: Optional[str],
+    max_depth: int,
+    max_iterations: int,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Run a single query through the full VL-RAG-Graph-RLM pipeline.
+
+    This is the **single source of truth** for every query path — both
+    ``run_analysis()`` and the interactive REPL call this function so that
+    every query is guaranteed to go through:
+
+    1. Qwen3-VL dense embedding search (with retrieval instruction)
+    2. Keyword search + Reciprocal Rank Fusion
+    3. Qwen3-VL cross-attention reranking (text + images)
+    4. Knowledge-graph context augmentation
+    5. RLM recursive completion (with provider hierarchy fallback)
+    """
+    sources_info: List[Dict[str, Any]] = []
+
+    # ── Stage 1-3: Retrieval → Fusion → Reranking ──────────────────
+    if store is not None and HAS_QWEN3VL:
+        # 1. Dense search with retrieval-specific instruction
+        dense_results = store.search(
+            query, top_k=_DENSE_TOP_K, instruction=_QUERY_INSTRUCTION,
+        )
+        if verbose:
+            print(f"    Dense search: {len(dense_results)} results")
+
+        # 2. Keyword search + RRF fusion
+        keyword_results = _keyword_search(store, query, top_k=_KEYWORD_TOP_K)
+        if verbose:
+            print(f"    Keyword search: {len(keyword_results)} results")
+
+        if keyword_results:
+            fused_results = rrf.fuse(
+                [dense_results, keyword_results], weights=[4.0, 1.0],
+            )
+        else:
+            fused_results = dense_results
+        if verbose:
+            print(f"    After RRF fusion: {len(fused_results)} results")
+
+        # 3. Qwen3-VL cross-attention reranking (text + images)
+        if reranker_vl and fused_results:
+            docs_for_rerank: List[Dict[str, Any]] = []
+            for r in fused_results[:_RERANK_CANDIDATES]:
+                doc = store.get(r.id)
+                if doc:
+                    doc_dict: Dict[str, Any] = {"text": doc.content}
+                    if doc.image_path:
+                        doc_dict["image"] = doc.image_path
+                    docs_for_rerank.append(doc_dict)
+
+            reranked_indices = reranker_vl.rerank(
+                query={"text": query}, documents=docs_for_rerank,
+            )
+            reordered = []
+            for idx, score in reranked_indices:
+                if idx < len(fused_results):
+                    result = fused_results[idx]
+                    result.composite_score = score * 100
+                    reordered.append(result)
+            final_results = reordered[:_FINAL_RESULTS]
+            if verbose:
+                print(
+                    f"    After Qwen3-VL reranking: {len(final_results)} results"
+                    f" (from {len(docs_for_rerank)} candidates)"
+                )
+        else:
+            final_results = fused_results[:_FINAL_RESULTS]
+
+        # Assemble context from reranked results
+        context_parts = []
+        for i, result in enumerate(final_results):
+            doc = store.get(result.id)
+            if doc:
+                context_parts.append(
+                    f"[Source {i + 1}] (score: {result.composite_score:.1f})\n"
+                    f"{doc.content}"
+                )
+                sources_info.append(
+                    {
+                        "content": doc.content[:200],
+                        "score": result.composite_score,
+                        "metadata": doc.metadata,
+                    }
+                )
+        context = "\n\n---\n\n".join(context_parts)
+    else:
+        # Fallback: CompositeReranker without VL embeddings
+        search_results = [
+            SearchResult(
+                id=i,
+                content=chunk.get("content", ""),
+                metadata={"type": chunk.get("type", "text")},
+                semantic_score=1.0,
+            )
+            for i, chunk in enumerate(all_chunks)
+        ]
+        reranked, _ = fallback_reranker.process(
+            query, [r.__dict__ for r in search_results],
+        )
+        reranked.sort(
+            key=lambda x: x.get("composite_score", 0), reverse=True,
+        )
+        top_chunks = reranked[:_FINAL_RESULTS]
+        context = "\n\n---\n\n".join(
+            [c.get("content", "") for c in top_chunks]
+        )
+
+    # ── Stage 4: Knowledge-graph context augmentation ──────────────
+    if knowledge_graph and not knowledge_graph.startswith("Could not"):
+        kg_budget = min(8000, context_budget // 3)
+        context = (
+            f"[Knowledge Graph]\n{knowledge_graph[:kg_budget]}\n\n---\n\n"
+            f"{context}"
+        )
+
+    # ── Stage 5: RLM recursive completion ──────────────────────────
+    try:
+        q_start = time.time()
+        result = rlm.completion(query, context[:context_budget])
+        elapsed = time.time() - q_start
+        if verbose:
+            print(f"    RLM answer in {elapsed:.2f}s")
+        return {
+            "query": query,
+            "response": result.response,
+            "time": elapsed,
+            "sources": sources_info,
+        }
+    except Exception as e:
+        # Provider hierarchy fallback
+        if fallback_hierarchy and len(fallback_hierarchy) > 1:
+            fallback_result = _try_fallback_query(
+                query, context[:context_budget], fallback_hierarchy,
+                provider, resolved_model, max_depth, max_iterations,
+            )
+            if fallback_result:
+                if verbose:
+                    print(
+                        f"    Fallback answer via "
+                        f"{fallback_result.get('fallback_provider', '?')}"
+                    )
+                return fallback_result
+        return {
+            "query": query,
+            "response": f"Error: {e}",
+            "time": 0,
+            "sources": [],
+        }
 
 
 def _resolve_provider(provider: str) -> tuple[str, bool]:
@@ -1113,7 +1243,10 @@ def run_interactive_session(
                 metadata = {"type": chunk.get("type", "text")}
                 if "slide" in chunk:
                     metadata["slide"] = chunk["slide"]
-                store.add_text(content=content, metadata=metadata)
+                store.add_text(
+                    content=content, metadata=metadata,
+                    instruction=_DOCUMENT_INSTRUCTION,
+                )
                 embedded += 1
 
             # Embed images
@@ -1131,6 +1264,7 @@ def run_interactive_session(
                                 "slide": img_info["slide"],
                                 "filename": img_info["filename"],
                             },
+                            instruction=_DOCUMENT_INSTRUCTION,
                         )
                         embedded += 1
                     except Exception as e:
@@ -1145,7 +1279,7 @@ def run_interactive_session(
             )
             try:
                 kg_result = rlm.completion(
-                    "Extract key concepts, entities, and relationships from this document.",
+                    _KG_EXTRACTION_PROMPT,
                     kg_context[:kg_char_limit],
                 )
                 knowledge_graph = _merge_knowledge_graphs(
@@ -1163,112 +1297,31 @@ def run_interactive_session(
         _ingest_path(input_path)
 
     # ----------------------------------------------------------------
-    # Step 5: Query helper
+    # Step 5: Query helper (delegates to shared VL-RAG pipeline)
     # ----------------------------------------------------------------
     def _run_query(q: str) -> Dict[str, Any]:
-        """Run a single query against the loaded store + KG."""
+        """Run a single query through the full VL-RAG-Graph-RLM pipeline."""
         nonlocal query_count, total_query_time
-        sources_info: List[Dict[str, Any]] = []
-
-        if store is not None and HAS_QWEN3VL:
-            dense_results = store.search(q, top_k=20)
-            keyword_results = _keyword_search(store, q, top_k=20)
-
-            if keyword_results:
-                fused_results = rrf.fuse(
-                    [dense_results, keyword_results], weights=[4.0, 1.0]
-                )
-            else:
-                fused_results = dense_results
-
-            if reranker_vl and fused_results:
-                docs_for_rerank: List[Dict[str, Any]] = []
-                for r in fused_results[:15]:
-                    doc = store.get(r.id)
-                    if doc:
-                        doc_dict: Dict[str, Any] = {"text": doc.content}
-                        if doc.image_path:
-                            doc_dict["image"] = doc.image_path
-                        docs_for_rerank.append(doc_dict)
-
-                reranked_indices = reranker_vl.rerank(
-                    query={"text": q}, documents=docs_for_rerank
-                )
-                reordered = []
-                for idx, score in reranked_indices:
-                    if idx < len(fused_results):
-                        result = fused_results[idx]
-                        result.composite_score = score * 100
-                        reordered.append(result)
-                final_results = reordered[:5]
-            else:
-                final_results = fused_results[:5]
-
-            context_parts = []
-            for i, result in enumerate(final_results):
-                doc = store.get(result.id)
-                if doc:
-                    context_parts.append(
-                        f"[Source {i + 1}] (score: {result.composite_score:.1f})\n{doc.content}"
-                    )
-                    sources_info.append(
-                        {
-                            "content": doc.content[:150],
-                            "score": result.composite_score,
-                            "metadata": doc.metadata,
-                        }
-                    )
-            context = "\n\n---\n\n".join(context_parts)
-        else:
-            search_results = [
-                SearchResult(
-                    id=i,
-                    content=chunk.get("content", ""),
-                    metadata={"type": chunk.get("type", "text")},
-                    semantic_score=1.0,
-                )
-                for i, chunk in enumerate(all_chunks)
-            ]
-            reranked, _ = fallback_reranker.process(
-                q, [r.__dict__ for r in search_results]
-            )
-            reranked.sort(
-                key=lambda x: x.get("composite_score", 0), reverse=True
-            )
-            top_chunks = reranked[:3] if len(reranked) >= 3 else reranked
-            context = "\n\n---\n\n".join(
-                [c.get("content", "") for c in top_chunks]
-            )
-
-        # Prepend KG context if available
-        if knowledge_graph:
-            context = (
-                f"[Knowledge Graph]\n{knowledge_graph[:5000]}\n\n---\n\n{context}"
-            )
-
-        try:
-            q_start = time.time()
-            result = rlm.completion(q, context[:context_budget])
-            elapsed = time.time() - q_start
-            query_count += 1
-            total_query_time += elapsed
-            return {
-                "query": q,
-                "response": result.response,
-                "time": elapsed,
-                "sources": sources_info,
-            }
-        except Exception as e:
-            if fallback_hierarchy and len(fallback_hierarchy) > 1:
-                fallback_result = _try_fallback_query(
-                    q, context[:context_budget], fallback_hierarchy,
-                    provider, resolved_model, max_depth, max_iterations,
-                )
-                if fallback_result:
-                    query_count += 1
-                    total_query_time += fallback_result.get("time", 0)
-                    return fallback_result
-            return {"query": q, "response": f"Error: {e}", "time": 0, "sources": []}
+        result = _run_vl_rag_query(
+            q,
+            store=store,
+            reranker_vl=reranker_vl,
+            rrf=rrf,
+            fallback_reranker=fallback_reranker,
+            all_chunks=all_chunks,
+            knowledge_graph=knowledge_graph,
+            context_budget=context_budget,
+            rlm=rlm,
+            fallback_hierarchy=fallback_hierarchy,
+            provider=provider,
+            resolved_model=resolved_model,
+            max_depth=max_depth,
+            max_iterations=max_iterations,
+            verbose=False,
+        )
+        query_count += 1
+        total_query_time += result.get("time", 0)
+        return result
 
     # ----------------------------------------------------------------
     # Step 6: Interactive REPL
@@ -1382,6 +1435,356 @@ def run_interactive_session(
             print(f"  [{len(result['sources'])} sources retrieved]")
 
 
+# ── Collection operations ──────────────────────────────────────────────
+
+
+def run_collection_add(
+    collection_names: List[str],
+    input_path: str,
+    provider: str,
+    model: Optional[str] = None,
+    max_depth: int = 3,
+    max_iterations: int = 10,
+    description: str = "",
+) -> None:
+    """Add documents from *input_path* into one or more named collections.
+
+    Creates the collection if it does not exist.  Embeds new content with
+    Qwen3-VL, builds/merges the knowledge graph, and persists everything.
+    """
+    provider, is_auto = _resolve_provider(provider)
+    prov_info = SUPPORTED_PROVIDERS[provider]
+    context_budget = prov_info["context_budget"]
+
+    api_key = os.getenv(prov_info["env_key"])
+    if not api_key:
+        print(f"Error: {prov_info['env_key']} not set")
+        sys.exit(1)
+
+    resolved_model = model
+
+    # Process documents once
+    processor = DocumentProcessor()
+    print(f"[collection] Processing: {input_path}")
+    documents = processor.process_path(input_path)
+    if isinstance(documents, dict):
+        documents = [documents]
+
+    all_chunks: List[dict] = []
+    for doc in documents:
+        all_chunks.extend(doc.get("chunks", []))
+    print(f"  {len(documents)} document(s), {len(all_chunks)} chunks")
+
+    # Initialise RLM for KG extraction
+    rlm_kwargs: Dict[str, Any] = {
+        "provider": provider,
+        "temperature": 0.0,
+        "max_depth": max_depth,
+        "max_iterations": max_iterations,
+    }
+    if resolved_model:
+        rlm_kwargs["model"] = resolved_model
+    rlm = VLRAGGraphRLM(**rlm_kwargs)
+
+    for cname in collection_names:
+        meta = create_collection(cname, description=description)
+        slug = meta["name"]
+        storage_file = collection_embeddings_path(slug)
+        kg_file = collection_kg_path(slug)
+
+        print(f"\n[collection:{slug}] Adding documents...")
+
+        embedder = None
+        store = None
+        embedded_count = 0
+        skipped_count = 0
+
+        if HAS_QWEN3VL:
+            import torch
+
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            embedder = create_qwen3vl_embedder(
+                model_name="Qwen/Qwen3-VL-Embedding-2B", device=device,
+            )
+            store = MultimodalVectorStore(
+                embedding_provider=embedder, storage_path=storage_file,
+            )
+            existing = len(store.documents)
+            if existing:
+                print(f"  Loaded {existing} existing embeddings")
+
+            for chunk in all_chunks:
+                content = chunk.get("content", "")
+                if not content.strip():
+                    continue
+                if store.content_exists(content):
+                    skipped_count += 1
+                    continue
+                metadata = {"type": chunk.get("type", "text")}
+                if "slide" in chunk:
+                    metadata["slide"] = chunk["slide"]
+                store.add_text(
+                    content=content, metadata=metadata,
+                    instruction=_DOCUMENT_INSTRUCTION,
+                )
+                embedded_count += 1
+
+            # Embed images
+            for doc in documents:
+                for img_info in doc.get("image_data", []):
+                    try:
+                        temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
+                        with open(temp_path, "wb") as f:
+                            f.write(img_info["blob"])
+                        prev = len(store.documents)
+                        store.add_image(
+                            image_path=temp_path,
+                            description=f"Image from slide {img_info['slide']}",
+                            metadata={
+                                "type": "image",
+                                "slide": img_info["slide"],
+                                "filename": img_info["filename"],
+                            },
+                            instruction=_DOCUMENT_INSTRUCTION,
+                        )
+                        if len(store.documents) > prev:
+                            embedded_count += 1
+                        else:
+                            skipped_count += 1
+                    except Exception as e:
+                        print(f"  Warning: image embed failed: {e}")
+
+            print(f"  New: {embedded_count} | Skipped: {skipped_count} | Total: {len(store.documents)}")
+        else:
+            print("  Warning: Qwen3-VL not available — skipping embeddings")
+
+        # Build/merge knowledge graph
+        knowledge_graph = collection_load_kg(slug)
+        if all_chunks:
+            kg_char_limit = min(context_budget, 25000)
+            kg_doc_limit = max(2000, kg_char_limit // max(len(documents), 1))
+            kg_context = "\n\n".join(
+                [d.get("content", "")[:kg_doc_limit] for d in documents]
+            )
+            try:
+                kg_result = rlm.completion(_KG_EXTRACTION_PROMPT, kg_context[:kg_char_limit])
+                knowledge_graph = collection_merge_kg(knowledge_graph, kg_result.response)
+                collection_save_kg(slug, knowledge_graph)
+                print(f"  Knowledge graph: {len(knowledge_graph):,} chars")
+            except Exception as e:
+                print(f"  Warning: KG extraction failed: {e}")
+
+        record_source(slug, input_path, len(documents), len(all_chunks))
+        print(f"  Collection '{slug}' updated.")
+
+
+def run_collection_query(
+    collection_names: List[str],
+    query: str,
+    provider: str,
+    model: Optional[str] = None,
+    max_depth: int = 3,
+    max_iterations: int = 10,
+    output: Optional[str] = None,
+) -> None:
+    """Query one or more collections, blending their stores and KGs.
+
+    This is fully scriptable — no user interaction required.
+    """
+    provider, is_auto = _resolve_provider(provider)
+    prov_info = SUPPORTED_PROVIDERS[provider]
+    context_budget = prov_info["context_budget"]
+
+    api_key = os.getenv(prov_info["env_key"])
+    if not api_key:
+        print(f"Error: {prov_info['env_key']} not set")
+        sys.exit(1)
+
+    resolved_model = model
+    fallback_hierarchy = get_available_providers() if is_auto else None
+
+    # Initialise RLM
+    rlm_kwargs: Dict[str, Any] = {
+        "provider": provider,
+        "temperature": 0.0,
+        "max_depth": max_depth,
+        "max_iterations": max_iterations,
+    }
+    if resolved_model:
+        rlm_kwargs["model"] = resolved_model
+    rlm = VLRAGGraphRLM(**rlm_kwargs)
+
+    # Load and blend collections
+    blended_store = None
+    blended_kg = ""
+    all_chunks: List[dict] = []
+    embedder = None
+    reranker_vl = None
+
+    if HAS_QWEN3VL:
+        import torch
+
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        embedder = create_qwen3vl_embedder(
+            model_name="Qwen/Qwen3-VL-Embedding-2B", device=device,
+        )
+        reranker_vl = create_qwen3vl_reranker(
+            model_name="Qwen/Qwen3-VL-Reranker-2B", device=device,
+        )
+
+    collection_labels = []
+    for cname in collection_names:
+        if not collection_exists(cname):
+            print(f"Error: Collection '{cname}' does not exist")
+            print("Run 'vrlmrag --collection-list' to see available collections")
+            sys.exit(1)
+
+        meta = load_collection_meta(cname)
+        slug = meta["name"]
+        collection_labels.append(slug)
+
+        # Merge KG
+        kg = collection_load_kg(slug)
+        if kg:
+            blended_kg = collection_merge_kg(blended_kg, kg)
+
+        # Load store
+        if HAS_QWEN3VL and embedder:
+            storage_file = collection_embeddings_path(slug)
+            store = MultimodalVectorStore(
+                embedding_provider=embedder, storage_path=storage_file,
+            )
+            if blended_store is None:
+                blended_store = store
+            else:
+                # Merge documents from this store into the blended store
+                for doc_id, doc in store.documents.items():
+                    if doc_id not in blended_store.documents:
+                        blended_store.documents[doc_id] = doc
+
+    label = " + ".join(collection_labels)
+    print(f"[query] Collections: {label}")
+    if blended_store:
+        print(f"  Total documents in blended store: {len(blended_store.documents)}")
+    if blended_kg:
+        print(f"  Blended KG: {len(blended_kg):,} chars")
+
+    rrf = ReciprocalRankFusion(k=60)
+    fallback_reranker = CompositeReranker()
+
+    print(f"\n  Query: {query}")
+    result = _run_vl_rag_query(
+        query,
+        store=blended_store,
+        reranker_vl=reranker_vl,
+        rrf=rrf,
+        fallback_reranker=fallback_reranker,
+        all_chunks=all_chunks,
+        knowledge_graph=blended_kg,
+        context_budget=context_budget,
+        rlm=rlm,
+        fallback_hierarchy=fallback_hierarchy,
+        provider=provider,
+        resolved_model=resolved_model,
+        max_depth=max_depth,
+        max_iterations=max_iterations,
+    )
+
+    print(f"\n{result['response']}")
+    if result.get("time"):
+        print(f"\n  [{result['time']:.2f}s]")
+    if result.get("sources"):
+        print(f"  [{len(result['sources'])} sources retrieved]")
+
+    # Optionally save to file
+    if output:
+        report_lines = [
+            f"# Collection Query: {label}",
+            "",
+            f"**Query:** {query}",
+            f"**Provider:** {provider}",
+            f"**Model:** {rlm.model}",
+            f"**Time:** {result.get('time', 0):.2f}s",
+            "",
+            "## Response",
+            "",
+            result["response"],
+            "",
+        ]
+        if result.get("sources"):
+            report_lines.append("## Sources")
+            report_lines.append("")
+            for src in result["sources"]:
+                score = src.get("score", 0)
+                preview = src.get("content", "")[:120]
+                report_lines.append(f"- [Score: {score:.2f}] {preview}...")
+            report_lines.append("")
+
+        Path(output).write_text("\n".join(report_lines), encoding="utf-8")
+        print(f"\n  Report saved to: {output}")
+
+
+def show_collection_list() -> None:
+    """Print all available collections."""
+    collections = _list_collections_meta()
+    if not collections:
+        print("No collections found.")
+        print(f"Create one with: vrlmrag -c <name> --add <path>")
+        return
+
+    print(f"{'Name':<25} {'Docs':>6} {'Chunks':>8} {'Sources':>8}  Updated")
+    print("-" * 80)
+    for meta in collections:
+        name = meta.get("display_name", meta["name"])
+        docs = meta.get("document_count", 0)
+        chunks = meta.get("chunk_count", 0)
+        sources = len(meta.get("sources", []))
+        updated = meta.get("updated", "?")[:19]
+        print(f"{name:<25} {docs:>6} {chunks:>8} {sources:>8}  {updated}")
+
+
+def show_collection_info(name: str) -> None:
+    """Print detailed info for a single collection."""
+    if not collection_exists(name):
+        print(f"Error: Collection '{name}' does not exist")
+        sys.exit(1)
+
+    meta = load_collection_meta(name)
+    slug = meta["name"]
+
+    print(f"Collection: {meta.get('display_name', slug)}")
+    print(f"  Slug:        {slug}")
+    print(f"  Description: {meta.get('description', '(none)')}")
+    print(f"  Created:     {meta.get('created', '?')[:19]}")
+    print(f"  Updated:     {meta.get('updated', '?')[:19]}")
+    print(f"  Documents:   {meta.get('document_count', 0)}")
+    print(f"  Chunks:      {meta.get('chunk_count', 0)}")
+    print(f"  Directory:   {_collection_dir(slug)}")
+
+    # Embedding count
+    emb_file = Path(collection_embeddings_path(slug))
+    if emb_file.exists():
+        import json as _json
+        try:
+            data = _json.loads(emb_file.read_text(encoding="utf-8"))
+            print(f"  Embeddings:  {len(data.get('documents', {}))}")
+        except Exception:
+            print(f"  Embeddings:  (file exists, could not parse)")
+    else:
+        print(f"  Embeddings:  0")
+
+    # KG size
+    kg = collection_load_kg(slug)
+    print(f"  KG size:     {len(kg):,} chars" if kg else "  KG size:     0 chars")
+
+    # Sources
+    sources = meta.get("sources", [])
+    if sources:
+        print(f"\n  Sources ({len(sources)}):")
+        for src in sources:
+            print(f"    - {src['path']}  ({src['documents']} docs, {src['chunks']} chunks, {src['added'][:19]})")
+
+
 def main():
     provider_names = ", ".join(SUPPORTED_PROVIDERS.keys())
 
@@ -1404,6 +1807,15 @@ def main():
             "  vrlmrag -i ./codebase                               # load & query continuously\n"
             "  vrlmrag --show-hierarchy                            # see fallback order\n"
             "  vrlmrag --list-providers                            # see all providers\n"
+            "\n"
+            "collections (named persistent knowledge stores):\n"
+            "  vrlmrag -c research --add ./papers/              # add docs to collection\n"
+            "  vrlmrag -c research -q 'Key findings?'           # query a collection\n"
+            "  vrlmrag -c research -c code -q 'How implemented?' # blend collections\n"
+            "  vrlmrag -c research -i                           # interactive w/ collection\n"
+            "  vrlmrag --collection-list                        # list all collections\n"
+            "  vrlmrag -c research --collection-info            # show collection details\n"
+            "  vrlmrag -c research --collection-delete          # delete a collection\n"
             "\n"
             "interactive mode:\n"
             "  Loads VL models once, then lets you query continuously and add more\n"
@@ -1484,6 +1896,40 @@ def main():
         help="Directory for persisting embeddings and knowledge graph (default: .vrlmrag_store next to input)",
     )
 
+    # ── Collection arguments ──────────────────────────────────────────
+    parser.add_argument(
+        "--collection", "-c",
+        metavar="NAME", action="append", default=[],
+        help="Named collection to use (repeatable for blending: -c A -c B)",
+    )
+
+    parser.add_argument(
+        "--add",
+        metavar="PATH",
+        help="Add documents at PATH to the specified collection(s)",
+    )
+
+    parser.add_argument(
+        "--collection-list", action="store_true",
+        help="List all available collections",
+    )
+
+    parser.add_argument(
+        "--collection-info", action="store_true",
+        help="Show detailed info for the specified collection",
+    )
+
+    parser.add_argument(
+        "--collection-delete", action="store_true",
+        help="Delete the specified collection and all its data",
+    )
+
+    parser.add_argument(
+        "--collection-description",
+        metavar="TEXT", default="",
+        help="Description for a new collection (used with --add)",
+    )
+
     # Backward-compatible aliases (hidden from main help)
     parser.add_argument("--samba-nova", metavar="PATH", help=argparse.SUPPRESS)
     parser.add_argument("--nebius", metavar="PATH", help=argparse.SUPPRESS)
@@ -1510,7 +1956,72 @@ def main():
         provider = "nebius"
         input_path = args.nebius
 
-    # Interactive mode
+    # ── Collection dispatch ────────────────────────────────────────────
+    if args.collection_list:
+        show_collection_list()
+        return
+
+    if args.collection_delete:
+        if not args.collection:
+            print("Error: --collection-delete requires -c <name>")
+            sys.exit(1)
+        for cname in args.collection:
+            if delete_collection(cname):
+                print(f"Deleted collection: {cname}")
+            else:
+                print(f"Collection not found: {cname}")
+        return
+
+    if args.collection_info:
+        if not args.collection:
+            print("Error: --collection-info requires -c <name>")
+            sys.exit(1)
+        for cname in args.collection:
+            show_collection_info(cname)
+        return
+
+    if args.collection and args.add:
+        run_collection_add(
+            collection_names=args.collection,
+            input_path=args.add,
+            provider=provider,
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            description=args.collection_description,
+        )
+        return
+
+    if args.collection and args.query:
+        run_collection_query(
+            collection_names=args.collection,
+            query=args.query,
+            provider=provider,
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            output=args.output,
+        )
+        return
+
+    if args.collection and args.interactive:
+        # Interactive mode with collection(s) as the store
+        # Use the first collection's store dir for the session
+        if not collection_exists(args.collection[0]):
+            create_collection(args.collection[0])
+        slug = load_collection_meta(args.collection[0])["name"]
+        coll_dir = str(_collection_dir(slug))
+        run_interactive_session(
+            provider=provider,
+            input_path=input_path,
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            store_dir=coll_dir,
+        )
+        return
+
+    # ── Interactive mode (no collection) ───────────────────────────────
     if args.interactive:
         run_interactive_session(
             provider=provider,
@@ -1522,6 +2033,7 @@ def main():
         )
         return
 
+    # ── Default: run_analysis ──────────────────────────────────────────
     if not input_path:
         parser.print_help()
         print(f"\nError: input PATH is required.")
