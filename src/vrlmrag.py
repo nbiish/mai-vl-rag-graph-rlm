@@ -818,7 +818,13 @@ def _try_fallback_query(
     max_depth: int,
     max_iterations: int,
 ) -> Optional[Dict[str, Any]]:
-    """Try fallback providers for a failed query."""
+    """Try fallback providers for a failed query.
+
+    Note: model is NOT forwarded to fallback providers because model names
+    are provider-specific (e.g., 'DeepSeek-V3.2' on SambaNova vs 'glm-4.7'
+    on z.ai). Each fallback provider uses its own default model from env or
+    hardcoded defaults.
+    """
     for fb_provider in hierarchy:
         if fb_provider == failed_provider:
             continue
@@ -829,8 +835,6 @@ def _try_fallback_query(
                 "max_depth": max_depth,
                 "max_iterations": max_iterations,
             }
-            if model:
-                fb_kwargs["model"] = model
 
             fb_rlm = VLRAGGraphRLM(**fb_kwargs)
             q_start = time.time()

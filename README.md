@@ -216,6 +216,7 @@ PROVIDER_HIERARCHY=zai,zenmux,openrouter,cerebras,groq,nebius,sambanova,...
 Special provider notes:
 - **z.ai**: Set `ZAI_CODING_PLAN=true` (default) to try Coding Plan endpoint first, falling back to normal endpoint on failure
 - **ZenMux**: Uses `provider/model-name` format (e.g., `moonshotai/kimi-k2.5`)
+- **SambaNova**: On 429 rate limit, automatically retries with `DeepSeek-V3.1` (V3.2 has per-model limits). Override via `SAMBANOVA_FALLBACK_MODEL`
 
 See `.env.example` for all options.
 

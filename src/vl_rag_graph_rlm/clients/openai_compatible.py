@@ -1,5 +1,6 @@
 """OpenAI-compatible client (works with OpenAI, OpenRouter, ZenMux, z.ai)."""
 
+import logging
 import os
 import time
 from collections import defaultdict
@@ -7,6 +8,8 @@ from typing import Any
 
 import openai
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.types import ModelUsageSummary, UsageSummary
@@ -125,10 +128,17 @@ class OpenAICompatibleClient(BaseLM):
                 f"environment variable or pass api_key explicitly."
             )
 
-        # Initialize OpenAI clients
-        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url, **kwargs)
+        # Initialize OpenAI clients with timeout and no internal retries.
+        # - timeout: prevents infinite hangs; critical for hierarchy fallback
+        # - max_retries=0: hierarchy handles retries at provider level;
+        #   openai lib's default retry+backoff causes 20-80s delays
+        self.client = openai.OpenAI(
+            api_key=self.api_key, base_url=self.base_url,
+            timeout=120.0, max_retries=0, **kwargs
+        )
         self.async_client = openai.AsyncOpenAI(
-            api_key=self.api_key, base_url=self.base_url, **kwargs
+            api_key=self.api_key, base_url=self.base_url,
+            timeout=120.0, max_retries=0, **kwargs
         )
 
         # Usage tracking
@@ -648,8 +658,8 @@ class SambaNovaClient(OpenAICompatibleClient):
     Client for SambaNova Cloud API.
 
     Available models (Feb 2026, 128K context unless noted):
-        - DeepSeek-V3.2: DeepSeek V3.2 (200+ tok/sec)
-        - DeepSeek-V3.1: DeepSeek V3.1 (latest)
+        - DeepSeek-V3.2: DeepSeek V3.2 (200+ tok/sec) — default
+        - DeepSeek-V3.1: DeepSeek V3.1 — automatic fallback on V3.2 rate limit
         - DeepSeek-V3-0324: DeepSeek V3 March 2024
         - DeepSeek-R1-0528: Reasoning model
         - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
@@ -658,6 +668,10 @@ class SambaNovaClient(OpenAICompatibleClient):
         - Meta-Llama-3.3-70B-Instruct: Llama 3.3 70B
         - Qwen3-235B: Qwen 3 235B
         - Qwen3-32B: Qwen 3 32B
+
+    Model fallback: DeepSeek-V3.2 has per-model rate limits. If a 429
+    rate limit is hit, the client automatically retries with DeepSeek-V3.1.
+    Set SAMBANOVA_FALLBACK_MODEL to override the fallback model.
 
     Rate limits (Free tier): 20 RPM, 40 RPD, 200K TPD
     Rate limits (Developer tier): 60 RPM, 12K RPD
@@ -668,6 +682,8 @@ class SambaNovaClient(OpenAICompatibleClient):
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
         api_key = api_key or os.getenv("SAMBANOVA_API_KEY")
+        self._fallback_model = os.getenv("SAMBANOVA_FALLBACK_MODEL", "DeepSeek-V3.1")
+        self._using_fallback = False
         super().__init__(
             api_key=api_key,
             model_name=model_name or "DeepSeek-V3.2",
@@ -675,6 +691,36 @@ class SambaNovaClient(OpenAICompatibleClient):
             provider="sambanova",
             **kwargs,
         )
+
+    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Make a completion call; on 429 rate limit, retry with fallback model."""
+        try:
+            return super().completion(prompt, model=model)
+        except openai.RateLimitError as e:
+            effective = model or self.model_name
+            if effective == self._fallback_model:
+                raise  # already on fallback, nothing to fall back to
+            logger.warning(
+                "SambaNova: %s rate-limited, falling back to %s",
+                effective, self._fallback_model,
+            )
+            self._using_fallback = True
+            return super().completion(prompt, model=self._fallback_model)
+
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Make an async completion call; on 429 rate limit, retry with fallback model."""
+        try:
+            return await super().acompletion(prompt, model=model, **kwargs)
+        except openai.RateLimitError as e:
+            effective = model or self.model_name
+            if effective == self._fallback_model:
+                raise  # already on fallback, nothing to fall back to
+            logger.warning(
+                "SambaNova: %s rate-limited, falling back to %s",
+                effective, self._fallback_model,
+            )
+            self._using_fallback = True
+            return await super().acompletion(prompt, model=self._fallback_model, **kwargs)
 
 
 class NebiusClient(OpenAICompatibleClient):

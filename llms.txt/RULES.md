@@ -70,7 +70,9 @@ Device detection patterns in the codebase:
 - **Critical**: 200K TPD (tokens per day) free tier limit
 - Must budget context aggressively: ~8K chars per call
 - Default model: `DeepSeek-V3.2` (128K context, 200+ tok/s)
-- Also available: `DeepSeek-V3.1`, `gpt-oss-120b`, `Qwen3-235B`, `Llama-4-Maverick-17B-128E-Instruct`
+- **Model fallback**: On 429 rate limit, `SambaNovaClient` automatically retries with `DeepSeek-V3.1` (V3.2 has per-model rate limits)
+- Override fallback model via `SAMBANOVA_FALLBACK_MODEL` env var
+- Also available: `gpt-oss-120b`, `Qwen3-235B`, `Llama-4-Maverick-17B-128E-Instruct`
 - For unlimited usage, upgrade to Developer tier (12K RPD, no TPD limit)
 
 ### Nebius

@@ -61,6 +61,15 @@
 - [x] **`HierarchyClient(start_provider='groq')`**: Start hierarchy from a specific provider
 - [x] **Auto fallback on errors**: Rate limits, auth errors, network issues trigger next provider
 - [x] **CLI packaging verified**: `pip install -e .` → `vrlmrag` command works
+- [x] **Client timeout fix**: Added `timeout=120s` + `max_retries=0` to OpenAI clients (openai lib default retries caused 20–80s delays)
+- [x] **Fallback model fix**: `_try_fallback_query` no longer passes provider-specific model names to fallback providers
+
+### Full Pipeline E2E Verification (Feb 8, 2026)
+- [x] **International Business PPTX**: All 6 pillars exercised — 15 chunks, 11 images, 26 embeddings, KG via SambaNova DeepSeek-V3.2, query via zai fallback
+- [x] **Writing Tutorial PPTX**: All 6 pillars exercised — 20 chunks, 20 embeddings, KG + well-structured 10-point answer via fallback
+- [x] **SambaNova defaults verified**: DeepSeek-V3.2 default model, 8K char context budget, recursive model DeepSeek-V3.1
+- [x] **Hierarchy fallback verified live**: SambaNova rate-limited → auto fell through to zai → correct answer returned
+- [x] **Workflow updated**: `.windsurf/workflows/test-international-business.md` uses CLI auto mode
 
 ### Provider Model Updates (Feb 7, 2026 — live API-verified)
 - [x] **Groq default → `moonshotai/kimi-k2-instruct-0905`** (Kimi K2 on Groq LPU, verified via API)
