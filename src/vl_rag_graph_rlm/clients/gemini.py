@@ -1,11 +1,11 @@
-"""Google Gemini client."""
+"""Google Gemini client — uses the google-genai SDK (replaces deprecated google-generativeai)."""
 
 import os
 import time
 from collections import defaultdict
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 from vl_rag_graph_rlm.clients.base import BaseLM
@@ -15,24 +15,24 @@ load_dotenv()
 
 
 class GeminiClient(BaseLM):
-    """Client for Google Gemini API."""
+    """Client for Google Gemini API (google-genai SDK)."""
 
     def __init__(
         self,
         api_key: str | None = None,
-        model_name: str = "gemini-1.5-pro",
+        model_name: str = "gemini-2.0-flash",
         **kwargs,
     ):
         super().__init__(model_name=model_name, **kwargs)
 
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "Google API key required. Set GOOGLE_API_KEY environment variable or pass api_key explicitly."
+                "Google API key required. Set GOOGLE_API_KEY or GEMINI_API_KEY "
+                "environment variable or pass api_key explicitly."
             )
 
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model_name)
+        self.client = genai.Client(api_key=self.api_key)
 
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
@@ -43,20 +43,28 @@ class GeminiClient(BaseLM):
     def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
         """Make a synchronous completion call."""
         content = self._prepare_content(prompt)
+        effective_model = model or self.model_name
 
         start_time = time.time()
-        response = self.model.generate_content(content)
-        self._track_usage(response, model or self.model_name, time.time() - start_time)
+        response = self.client.models.generate_content(
+            model=effective_model,
+            contents=content,
+        )
+        self._track_usage(response, effective_model, time.time() - start_time)
 
         return response.text
 
     async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
         """Make an asynchronous completion call."""
         content = self._prepare_content(prompt)
+        effective_model = model or self.model_name
 
         start_time = time.time()
-        response = await self.model.generate_content_async(content)
-        self._track_usage(response, model or self.model_name, time.time() - start_time)
+        response = await self.client.aio.models.generate_content(
+            model=effective_model,
+            contents=content,
+        )
+        self._track_usage(response, effective_model, time.time() - start_time)
 
         return response.text
 
@@ -79,10 +87,10 @@ class GeminiClient(BaseLM):
         """Track usage statistics."""
         self.model_call_counts[model] += 1
 
-        # Gemini doesn't always provide token counts
-        if hasattr(response, "usage_metadata"):
-            input_tokens = response.usage_metadata.prompt_token_count
-            output_tokens = response.usage_metadata.candidates_token_count
+        if hasattr(response, "usage_metadata") and response.usage_metadata is not None:
+            um = response.usage_metadata
+            input_tokens = getattr(um, "prompt_token_count", 0) or 0
+            output_tokens = getattr(um, "candidates_token_count", 0) or 0
             self.model_input_tokens[model] += input_tokens
             self.model_output_tokens[model] += output_tokens
             self._last_usage = ModelUsageSummary(

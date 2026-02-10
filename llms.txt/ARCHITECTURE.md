@@ -169,6 +169,8 @@ is persisted to `knowledge_graph.md` and merged across runs.
 | Collections | `src/vl_rag_graph_rlm/collections.py` | Named persistent knowledge stores (CRUD, KG helpers) |
 | Environments REPL | `src/vl_rag_graph_rlm/environments/repl.py` | Alternative safe Python execution sandbox |
 | CLI | `src/vrlmrag.py` | Unified `--provider <name>` CLI for all 17 providers |
+| MCP Server | `src/vl_rag_graph_rlm/mcp_server/server.py` | FastMCP server with 10 tools, stdio transport |
+| MCP Settings | `src/vl_rag_graph_rlm/mcp_server/settings.py` | Settings loader, template resolution, hierarchy defaults |
 | Types | `src/vl_rag_graph_rlm/types.py` | Dataclasses for completions, usage, results |
 
 ### Templates
@@ -547,3 +549,243 @@ When multiple collections are specified (`-c A -c B`), the system:
 layer.  `run_collection_add()` and `run_collection_query()` in `vrlmrag.py`
 handle the CLI operations, both routing queries through the shared
 `_run_vl_rag_query()` pipeline.
+
+## MCP Server
+
+The codebase can also run as an **MCP (Model Context Protocol) server**,
+exposing the full VL-RAG-Graph-RLM pipeline as tools that any MCP-compatible
+client (Windsurf, Claude Desktop, etc.) can invoke.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  MCP Client (Windsurf / Claude Desktop / etc.)                      │
+│  Connects via stdio transport                                       │
+└──────────────┬──────────────────────────────────────────────────────┘
+               │  JSON-RPC (MCP protocol)
+               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  VL-RAG-Graph-RLM MCP Server                                        │
+│  src/vl_rag_graph_rlm/mcp_server/server.py                         │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │  Settings Loader (.vrlmrag/mcp_settings.json)            │       │
+│  │  → provider, model, template, max_depth, etc.            │       │
+│  │  → Default: provider="auto" (hierarchy system)           │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │  5-10 MCP Tools (conditional)                            │       │
+│  │  ├─ Core tools (always available):                        │       │
+│  │  │  ├── query_document      (full VL-RAG pipeline)       │       │
+│  │  │  ├── analyze_document    (6-pillar analysis)            │       │
+│  │  │  ├── list_providers      (show providers + keys)       │       │
+│  │  │  ├── show_hierarchy      (provider fallback order)     │       │
+│  │  │  └── show_settings       (current MCP config)         │       │
+│  │  │                                                         │       │
+│  │  └─ Collection tools (if VRLMRAG_COLLECTIONS=true):       │       │
+│  │     ├── collection_add      (ingest docs to collection)  │       │
+│  │     ├── collection_query    (query/blend collections)    │       │
+│  │     ├── collection_list     (list all collections)         │       │
+│  │     ├── collection_info     (collection metadata)          │       │
+│  │     └── collection_delete   (remove a collection)          │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                      │
+│  All tools default to provider="auto" (hierarchy system)            │
+│  Per-call overrides: provider=, model= on each tool                 │
+│  Global overrides: .vrlmrag/mcp_settings.json                       │
+└──────────────┬──────────────────────────────────────────────────────┘
+               │
+               ▼  Delegates to existing pipeline
+┌─────────────────────────────────────────────────────────────────────┐
+│  Existing VL-RAG-Graph-RLM Pipeline                                  │
+│  (DocumentProcessor, _run_vl_rag_query, run_analysis, collections)  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Source Files
+
+| Component | File | Description |
+|-----------|------|-------------|
+| Server | `src/vl_rag_graph_rlm/mcp_server/server.py` | FastMCP server, tool definitions, entry point |
+| Settings | `src/vl_rag_graph_rlm/mcp_server/settings.py` | Settings loader, template resolution |
+| Init | `src/vl_rag_graph_rlm/mcp_server/__init__.py` | Package init, re-exports `mcp` and `main` |
+| Main | `src/vl_rag_graph_rlm/mcp_server/__main__.py` | `python -m` entry point |
+| Config | `.vrlmrag/mcp_settings.json` | Default settings file (provider=auto) |
+
+### Installation
+
+```bash
+# Install via uv (recommended)
+uv pip install vl-rag-graph-rlm
+
+# Install via pip
+pip install vl-rag-graph-rlm
+
+# Install with Qwen3-VL vision models
+uv pip install "vl-rag-graph-rlm[qwen3vl]"
+```
+
+### Running the MCP Server
+
+```bash
+# Via uvx (no install needed — ephemeral environment)
+uvx --from vl-rag-graph-rlm vrlmrag-mcp
+
+# Via installed entry point
+vrlmrag-mcp
+
+# Via python -m
+python -m vl_rag_graph_rlm.mcp_server
+```
+
+### MCP Client Configuration
+
+Add to your MCP client's config (e.g., Windsurf `mcp_config.json` or Claude Desktop `config.json`).
+
+**Important:** Set `VRLMRAG_ROOT` to the path where you cloned the repo.
+The server loads `.env` from that directory so you never need to duplicate
+API keys into the MCP client config.
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "uvx",
+            "args": ["--from", "vl-rag-graph-rlm", "vrlmrag-mcp"],
+            "env": {
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm"
+            }
+        }
+    }
+}
+```
+
+Alternative (if already installed globally via `pip install` or `uv pip install`):
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "vrlmrag-mcp",
+            "args": [],
+            "env": {
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm"
+            }
+        }
+    }
+}
+```
+
+### Environment Resolution
+
+The server finds the codebase root (and its `.env`) in this order:
+
+1. **`VRLMRAG_ROOT` env var** — set in MCP client config; always works, even via `uvx`
+2. **`__file__`-based walk** — works for editable / local `pip install -e .` installs
+3. **CWD fallback** — if the server is started from the repo directory
+
+This means users configure their API keys in the repo's `.env` file once and
+the MCP server picks them up everywhere — no need to pass secrets through
+the MCP client's `env` block.
+
+### Settings (`mcp_settings.json`)
+
+The server loads settings from (in priority order):
+1. `$VRLMRAG_MCP_SETTINGS` env var → path to a JSON file
+2. `<project_root>/.vrlmrag/mcp_settings.json`
+3. Built-in defaults
+
+```json
+{
+    "provider": "auto",
+    "model": null,
+    "template": null,
+    "max_depth": 3,
+    "max_iterations": 10,
+    "temperature": 0.0,
+    "collections_enabled": true,
+    "collections_root": null,
+    "log_level": "INFO"
+}
+```
+
+**Key behavior:**
+- `provider: "auto"` (default) → uses the hierarchy system, same as CLI
+- `template` → shorthand for provider+model combos (e.g., `"fast-free"`, `"nebius-m2"`)
+- `collections_enabled` → controls whether collection tools are exposed to the LLM
+- Per-call `provider`/`model` overrides on each tool beat settings.json
+- Settings.json beats hierarchy defaults
+
+### Environment Variable Configuration
+
+All MCP settings can be overridden per-client via `VRLMRAG_*` env vars in the MCP client's `env` block. This enables different configurations for Windsurf, Claude Desktop, Cursor, etc. without touching the codebase.
+
+| Env Var | Values | Default | Description |
+|---------|--------|---------|-------------|
+| `VRLMRAG_ROOT` | Path | auto-detect | Path to cloned repo (loads .env from there) |
+| `VRLMRAG_PROVIDER` | `auto`, `sambanova`, `nebius`, ... | `auto` | Provider for MCP tools |
+| `VRLMRAG_MODEL` | Model name | `null` | Explicit model override |
+| `VRLMRAG_TEMPLATE` | Template name | `null` | Shorthand for provider+model |
+| `VRLMRAG_MAX_DEPTH` | Integer | `3` | Max RLM recursion depth |
+| `VRLMRAG_MAX_ITERATIONS` | Integer | `10` | Max RLM iterations per call |
+| `VRLMRAG_TEMPERATURE` | Float | `0.0` | LLM temperature |
+| `VRLMRAG_COLLECTIONS` | `true` / `false` | `true` | **Enable/disable collection tools** |
+| `VRLMRAG_COLLECTIONS_ROOT` | Path | `null` | Override collections directory |
+| `VRLMRAG_LOG_LEVEL` | `DEBUG`, `INFO`, ... | `INFO` | Logging level |
+
+**Priority:** `VRLMRAG_*` env vars > settings file > built-in defaults
+
+### Disabling Collection Tools
+
+To reduce token context for the LLM when collections aren't needed:
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "uv",
+            "args": ["run", "--project", "/path/to/repo", "python", "-m", "vl_rag_graph_rlm.mcp_server"],
+            "env": {
+                "VRLMRAG_ROOT": "/path/to/repo",
+                "VRLMRAG_COLLECTIONS": "false"
+            }
+        }
+    }
+}
+```
+
+With `VRLMRAG_COLLECTIONS=false`, the server exposes only 5 core tools instead of 10. The setting takes effect at server startup — restart the MCP server after changing it.
+
+### Available Templates
+
+| Template | Provider | Model |
+|----------|----------|-------|
+| `fast-free` | sambanova | DeepSeek-V3.2 |
+| `fast-groq` | groq | moonshotai/kimi-k2-instruct-0905 |
+| `fast-cerebras` | cerebras | zai-glm-4.7 |
+| `nebius-m2` | nebius | MiniMaxAI/MiniMax-M2.1 |
+| `openrouter-cheap` | openrouter | minimax/minimax-m2.1 |
+| `openai-mini` | openai | gpt-4o-mini |
+| `anthropic-haiku` | anthropic | claude-3-5-haiku-20241022 |
+| `gemini-flash` | gemini | gemini-1.5-flash |
+| `deepseek-chat` | deepseek | deepseek-chat |
+
+### MCP Tools Reference
+
+| Tool | Description | Key Parameters | Availability |
+|------|-------------|----------------|--------------|
+| `query_document` | Query a document/folder via full VL-RAG pipeline | `input_path`, `query`, `provider?`, `model?` | Always |
+| `analyze_document` | Run full 6-pillar analysis → markdown report | `input_path`, `query?`, `provider?`, `model?`, `output_path?` | Always |
+| `list_providers` | List providers and API key status | (none) | Always |
+| `show_hierarchy` | Show provider fallback hierarchy | (none) | Always |
+| `show_settings` | Show current MCP server settings | (none) | Always |
+| `collection_add` | Add documents to a named collection | `collection_name`, `input_path`, `description?` | If collections enabled |
+| `collection_query` | Query one or more collections (blendable) | `query`, `collection_names`, `provider?`, `model?` | If collections enabled |
+| `collection_list` | List all available collections | (none) | If collections enabled |
+| `collection_info` | Get detailed info about a collection | `collection_name` | If collections enabled |
+| `collection_delete_tool` | Delete a collection permanently | `collection_name` | If collections enabled |
+
+All tools with `provider?`/`model?` parameters default to the hierarchy
+system unless overridden per-call, via `mcp_settings.json`, or via `VRLMRAG_*` env vars.

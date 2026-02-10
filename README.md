@@ -1,6 +1,6 @@
 # VL-RAG-Graph-RLM
 
-**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Features **named persistent collections** for building scriptable knowledge bases, **accuracy-first retrieval** with widened parameters, and **universal persistent embeddings** with SHA-256 deduplication.
+**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Features **named persistent collections** for building scriptable knowledge bases, **MCP server integration** for AI assistants, **accuracy-first retrieval** with widened parameters, and **universal persistent embeddings** with SHA-256 deduplication.
 
 ## The Six Pillars
 
@@ -29,6 +29,34 @@ uv pip install -e ".[qwen3vl]"
 # Install everything
 uv pip install -e ".[all]"
 ```
+
+### MCP Server Installation
+
+Add to your MCP client (Windsurf, Claude Desktop, etc.):
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "/Users/YOU/.local/bin/uv",
+            "args": [
+                "run",
+                "--project",
+                "/path/to/mai-vl-rag-graph-rlm",
+                "python",
+                "-m",
+                "vl_rag_graph_rlm.mcp_server"
+            ],
+            "env": {
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
+                "VRLMRAG_COLLECTIONS": "true"
+            }
+        }
+    }
+}
+```
+
+Set `VRLMRAG_COLLECTIONS: "false"` to hide collection tools and reduce token context.
 
 ## Quick Start
 
@@ -331,6 +359,18 @@ PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 {PROVIDER}_MODEL=model-name           # optional
 {PROVIDER}_RECURSIVE_MODEL=model-name  # optional (for recursive calls)
 {PROVIDER}_FALLBACK_MODEL=model-name   # optional (auto-retry on error)
+
+# MCP Server configuration (per-client via mcp_config.json env block)
+VRLMRAG_ROOT=/path/to/repo              # Required: finds .env file
+VRLMRAG_PROVIDER=auto                   # Provider for MCP tools
+VRLMRAG_MODEL=null                      # Model override
+VRLMRAG_TEMPLATE=null                   # Template shorthand
+VRLMRAG_MAX_DEPTH=3                     # RLM recursion depth
+VRLMRAG_MAX_ITERATIONS=10               # RLM iterations
+VRLMRAG_TEMPERATURE=0.0                 # LLM temperature
+VRLMRAG_COLLECTIONS=true                # Enable/disable collection tools
+VRLMRAG_COLLECTIONS_ROOT=null         # Collections directory override
+VRLMRAG_LOG_LEVEL=INFO                  # Logging level
 ```
 
 Special provider notes:
@@ -493,17 +533,12 @@ pip install torch transformers>=5.1.0 qwen-vl-utils>=0.0.14 pillow torchvision
 embedder = create_qwen3vl_embedder(device="cpu")
 ```
 
-### google-generativeai deprecation warning
-```bash
-# Known issue — migration to google-genai planned for v0.2.0
-```
-
 ## Documentation
 
-- **[README.md](README.md)** (this file): Quick start, CLI reference, API docs
+- **[README.md](README.md)** (this file): Quick start, CLI reference, API docs, MCP server
 - **[llms.txt/README.md](llms.txt/README.md)**: Documentation index, what's new, navigation
 - **[llms.txt/PRD.md](llms.txt/PRD.md)**: Product requirements, architecture, CLI examples
-- **[llms.txt/ARCHITECTURE.md](llms.txt/ARCHITECTURE.md)**: System diagram, component map, pipeline flow
+- **[llms.txt/ARCHITECTURE.md](llms.txt/ARCHITECTURE.md)**: System diagram, component map, pipeline flow, MCP server details
 - **[llms.txt/CONTRIBUTING.md](llms.txt/CONTRIBUTING.md)**: Adding providers, extending collections, testing
 - **[llms.txt/TODO.md](llms.txt/TODO.md)**: Roadmap, planned features, completed items
 - **[SECURITY.md](SECURITY.md)**: Local security orchestration, secret scanning, OWASP compliance

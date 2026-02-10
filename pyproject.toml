@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "vl-rag-graph-rlm"
 version = "0.1.1"
 description = "Vision-Language RAG Graph Recursive Language Models - Multimodal RAG with Qwen3-VL, cheap SOTA LLMs, and graph-based reasoning"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 keywords = ["llm", "ai", "recursive", "rag", "multimodal", "vision-language", "graph", "qwen3vl", "openrouter", "zenmux", "z.ai"]
 classifiers = [
@@ -15,16 +15,16 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.18.0",
-    "google-generativeai>=0.3.0",
+    "google-genai>=1.0.0",
     "litellm>=1.0.0",
     "RestrictedPython>=7.0",
     "python-dotenv>=1.0.0",
@@ -37,16 +37,10 @@ dependencies = [
     "tiktoken>=0.7.0",
     "networkx>=3.0",
     "scikit-learn>=1.3.0",
+    "mcp>=1.1.3",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=24.0.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-]
 qwen3vl = [
     "torch>=2.0.0",
     "transformers>=5.1.0",
@@ -66,6 +60,12 @@ paddle = [
 all = [
     "vl-rag-graph-rlm[qwen3vl,paddle]",
 ]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pyright>=1.1.389",
+    "ruff>=0.7.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/nbiish/mai-vl-rag-graph-rlm"
@@ -73,17 +73,22 @@ Repository = "https://github.com/nbiish/mai-vl-rag-graph-rlm"
 
 [project.scripts]
 vrlmrag = "vrlmrag:main"
+vrlmrag-mcp = "vl_rag_graph_rlm.mcp_server:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/vl_rag_graph_rlm", "src/vrlmrag.py"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pyright>=1.1.389",
+    "ruff>=0.7.3",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.black]
-line-length = 100
-target-version = ['py311']
 
 [tool.ruff]
 line-length = 100

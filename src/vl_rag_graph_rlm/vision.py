@@ -61,15 +61,18 @@ class ImageContent:
     def to_gemini_format(self):
         """Convert to Gemini format."""
         try:
-            from google.generativeai import types
-            
+            from google.genai import types
+
             if isinstance(self.source, str) and self.source.startswith(("http://", "https://")):
-                return types.Image(url=self.source)
+                return types.Part.from_uri(file_uri=self.source, mime_type=self.mime_type or "image/jpeg")
             else:
                 base64_data = self._to_base64()
-                return types.Image(data=base64.b64decode(base64_data))
+                return types.Part.from_bytes(
+                    data=base64.b64decode(base64_data),
+                    mime_type=self.mime_type or "image/jpeg",
+                )
         except ImportError:
-            logger.error("google-generativeai not installed")
+            logger.error("google-genai not installed")
             return None
     
     def _to_base64(self) -> str:
