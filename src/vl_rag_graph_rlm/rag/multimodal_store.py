@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Optional, Callable, Set, Union
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import numpy as np
+
 from vl_rag_graph_rlm.rag import SearchResult
 from vl_rag_graph_rlm.rag.store import SimpleVectorStore, Document
 
@@ -72,8 +74,14 @@ class MultimodalVectorStore:
         self.storage_path = storage_path
         self.documents: Dict[str, MultimodalDocument] = {}
         self._content_hashes: Set[str] = set()
+        self._hash_to_id: Dict[str, str] = {}  # O(1) hash → doc_id lookup
         self.use_qwen_reranker = use_qwen_reranker
         self.reranker = reranker_provider
+
+        # NumPy embedding matrix cache for vectorized search
+        self._embedding_matrix: Optional[np.ndarray] = None
+        self._matrix_doc_ids: List[str] = []
+        self._matrix_dirty: bool = True
         
         if storage_path and os.path.exists(storage_path):
             self._load()
@@ -100,12 +108,10 @@ class MultimodalVectorStore:
         doc_id = doc_id or f"doc_{len(self.documents)}"
         metadata = metadata or {}
         
-        # Skip if content already embedded (deduplication)
+        # Skip if content already embedded (O(1) deduplication)
         content_hash = self._hash_content(content)
-        if content_hash in self._content_hashes:
-            existing_id = self._find_by_hash(content_hash)
-            if existing_id:
-                return existing_id
+        if content_hash in self._hash_to_id:
+            return self._hash_to_id[content_hash]
         
         # Generate embedding
         embedding = self.embedding_provider.embed_text(
@@ -122,6 +128,8 @@ class MultimodalVectorStore:
         
         self.documents[doc_id] = doc
         self._content_hashes.add(content_hash)
+        self._hash_to_id[content_hash] = doc_id
+        self._matrix_dirty = True
         
         if self.storage_path:
             self._save()
@@ -153,13 +161,11 @@ class MultimodalVectorStore:
         metadata["type"] = "image"
         metadata["image_path"] = image_path
         
-        # Skip if image already embedded (deduplication)
+        # Skip if image already embedded (O(1) deduplication)
         img_key = f"image:{image_path}:{description or ''}"
         content_hash = self._hash_content(img_key)
-        if content_hash in self._content_hashes:
-            existing_id = self._find_by_hash(content_hash)
-            if existing_id:
-                return existing_id
+        if content_hash in self._hash_to_id:
+            return self._hash_to_id[content_hash]
         
         # Generate multimodal embedding
         if description:
@@ -186,6 +192,8 @@ class MultimodalVectorStore:
         
         self.documents[doc_id] = doc
         self._content_hashes.add(content_hash)
+        self._hash_to_id[content_hash] = doc_id
+        self._matrix_dirty = True
         
         if self.storage_path:
             self._save()
@@ -249,6 +257,7 @@ class MultimodalVectorStore:
         )
         
         self.documents[doc_id] = doc
+        self._matrix_dirty = True
         
         if self.storage_path:
             self._save()
@@ -584,38 +593,82 @@ class MultimodalVectorStore:
         top_k: int,
         filter_fn: Optional[Callable[[MultimodalDocument], bool]]
     ) -> List[SearchResult]:
-        """Search using pre-computed query embedding."""
-        import math
-        
-        results = []
-        for doc in self.documents.values():
-            if filter_fn and not filter_fn(doc):
+        """Search using pre-computed query embedding (NumPy-vectorized)."""
+        if not self.documents:
+            return []
+
+        # Rebuild matrix if dirty
+        if self._matrix_dirty or self._embedding_matrix is None:
+            self._rebuild_embedding_matrix()
+
+        if self._embedding_matrix is None or len(self._matrix_doc_ids) == 0:
+            return []
+
+        # Normalize query vector
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        norm = np.linalg.norm(query_vec)
+        if norm == 0:
+            return []
+        query_vec = query_vec / norm
+
+        # Single matrix multiply: (N, D) @ (D,) -> (N,)
+        similarities = self._embedding_matrix @ query_vec
+
+        # Apply filter mask if provided
+        if filter_fn is not None:
+            mask = np.array([
+                filter_fn(self.documents[doc_id])
+                for doc_id in self._matrix_doc_ids
+            ], dtype=bool)
+            similarities = np.where(mask, similarities, -np.inf)
+
+        # Get top-k indices
+        k = min(top_k, len(self._matrix_doc_ids))
+        if k <= 0:
+            return []
+
+        top_indices = np.argpartition(similarities, -k)[-k:]
+        top_indices = top_indices[np.argsort(similarities[top_indices])[::-1]]
+
+        results: List[SearchResult] = []
+        for idx in top_indices:
+            idx_int = int(idx)
+            sim = float(similarities[idx_int])
+            if sim == -np.inf:
                 continue
-            
-            if doc.embedding is None:
-                continue
-            
-            # Cosine similarity
-            dot = sum(x * y for x, y in zip(query_embedding, doc.embedding))
-            norm_q = math.sqrt(sum(x * x for x in query_embedding))
-            norm_d = math.sqrt(sum(x * x for x in doc.embedding))
-            
-            if norm_q == 0 or norm_d == 0:
-                similarity = 0.0
-            else:
-                similarity = dot / (norm_q * norm_d)
-            
-            distance = 1.0 - similarity
-            
+            doc_id = self._matrix_doc_ids[idx_int]
+            doc = self.documents[doc_id]
+            distance = 1.0 - sim
             results.append(SearchResult(
                 id=doc.id,
                 content=doc.content,
                 metadata=doc.metadata,
-                semantic_score=distance
+                semantic_score=distance,
             ))
-        
-        results.sort(key=lambda x: x.semantic_score)
-        return results[:top_k]
+
+        return results
+
+    def _rebuild_embedding_matrix(self) -> None:
+        """Rebuild the normalized NumPy embedding matrix from documents."""
+        doc_ids = []
+        embeddings = []
+        for doc_id, doc in self.documents.items():
+            if doc.embedding is not None:
+                doc_ids.append(doc_id)
+                embeddings.append(doc.embedding)
+
+        if not embeddings:
+            self._embedding_matrix = None
+            self._matrix_doc_ids = []
+            self._matrix_dirty = False
+            return
+
+        mat = np.array(embeddings, dtype=np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        self._embedding_matrix = mat / norms
+        self._matrix_doc_ids = doc_ids
+        self._matrix_dirty = False
     
     def get(self, doc_id: str) -> Optional[MultimodalDocument]:
         """Get document by ID."""
@@ -624,7 +677,17 @@ class MultimodalVectorStore:
     def delete(self, doc_id: str) -> bool:
         """Delete document by ID."""
         if doc_id in self.documents:
+            doc = self.documents[doc_id]
+            # Clean up hash maps
+            content_hash = self._hash_content(doc.content)
+            self._content_hashes.discard(content_hash)
+            self._hash_to_id.pop(content_hash, None)
+            if doc.image_path:
+                img_hash = self._hash_content(f"image:{doc.image_path}:{doc.content}")
+                self._content_hashes.discard(img_hash)
+                self._hash_to_id.pop(img_hash, None)
             del self.documents[doc_id]
+            self._matrix_dirty = True
             if self.storage_path:
                 self._save()
             return True
@@ -636,25 +699,23 @@ class MultimodalVectorStore:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def _find_by_hash(self, content_hash: str) -> Optional[str]:
-        """Find a document ID by content hash."""
-        for doc_id, doc in self.documents.items():
-            h = self._hash_content(doc.content)
-            if h == content_hash:
-                return doc_id
-            if doc.image_path:
-                img_key = f"image:{doc.image_path}:{doc.content}"
-                if self._hash_content(img_key) == content_hash:
-                    return doc_id
-        return None
+        """Find a document ID by content hash (O(1) lookup)."""
+        return self._hash_to_id.get(content_hash)
 
     def _rebuild_content_hashes(self) -> None:
-        """Rebuild the content hash set from loaded documents."""
+        """Rebuild the content hash set and hash→id map from loaded documents."""
         self._content_hashes = set()
-        for doc in self.documents.values():
-            self._content_hashes.add(self._hash_content(doc.content))
+        self._hash_to_id = {}
+        for doc_id, doc in self.documents.items():
+            h = self._hash_content(doc.content)
+            self._content_hashes.add(h)
+            self._hash_to_id[h] = doc_id
             if doc.image_path:
                 img_key = f"image:{doc.image_path}:{doc.content}"
-                self._content_hashes.add(self._hash_content(img_key))
+                img_h = self._hash_content(img_key)
+                self._content_hashes.add(img_h)
+                self._hash_to_id[img_h] = doc_id
+        self._matrix_dirty = True
 
     def content_exists(self, content: str) -> bool:
         """Check if content is already in the store (by hash)."""

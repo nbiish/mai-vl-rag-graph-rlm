@@ -13,6 +13,8 @@ from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import numpy as np
+
 from vl_rag_graph_rlm.rag import SearchResult
 from vl_rag_graph_rlm.clients import get_client, BaseLM
 
@@ -140,6 +142,11 @@ class SimpleVectorStore:
         self.embedding_client = embedding_client
         self.documents: Dict[str, Document] = {}
         self.storage_path = storage_path
+
+        # NumPy embedding matrix cache for vectorized search
+        self._embedding_matrix: Optional[np.ndarray] = None
+        self._matrix_doc_ids: List[str] = []
+        self._matrix_dirty: bool = True
         
         if storage_path and os.path.exists(storage_path):
             self._load()
@@ -160,6 +167,7 @@ class SimpleVectorStore:
         )
         
         self.documents[doc_id] = doc
+        self._matrix_dirty = True
         
         if self.storage_path:
             self._save()
@@ -185,6 +193,8 @@ class SimpleVectorStore:
             self.documents[doc_id] = doc
             ids.append(doc_id)
         
+        self._matrix_dirty = True
+
         if self.storage_path:
             self._save()
         
@@ -196,34 +206,62 @@ class SimpleVectorStore:
         top_k: int = 10,
         filter_fn: Optional[Callable[[Document], bool]] = None
     ) -> List[SearchResult]:
-        """Search for similar documents."""
+        """Search for similar documents (NumPy-vectorized)."""
         if not self.documents:
             return []
         
         query_embedding = self.embedding_client.embed(query)
-        
-        results = []
-        for doc in self.documents.values():
-            # Apply filter if provided
-            if filter_fn and not filter_fn(doc):
+
+        # Rebuild matrix if dirty
+        if self._matrix_dirty or self._embedding_matrix is None:
+            self._rebuild_embedding_matrix()
+
+        if self._embedding_matrix is None or len(self._matrix_doc_ids) == 0:
+            return []
+
+        # Normalize query vector
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        norm = np.linalg.norm(query_vec)
+        if norm == 0:
+            return []
+        query_vec = query_vec / norm
+
+        # Single matrix multiply: (N, D) @ (D,) -> (N,)
+        similarities = self._embedding_matrix @ query_vec
+
+        # Apply filter mask if provided
+        if filter_fn is not None:
+            mask = np.array([
+                filter_fn(self.documents[doc_id])
+                for doc_id in self._matrix_doc_ids
+            ], dtype=bool)
+            similarities = np.where(mask, similarities, -np.inf)
+
+        # Get top-k indices
+        k = min(top_k, len(self._matrix_doc_ids))
+        if k <= 0:
+            return []
+
+        top_indices = np.argpartition(similarities, -k)[-k:]
+        top_indices = top_indices[np.argsort(similarities[top_indices])[::-1]]
+
+        results: List[SearchResult] = []
+        for idx in top_indices:
+            idx_int = int(idx)
+            sim = float(similarities[idx_int])
+            if sim == -np.inf:
                 continue
-            
-            # Calculate cosine similarity
-            similarity = self._cosine_similarity(query_embedding, doc.embedding)
-            # Convert to distance (for consistency with RRF)
-            distance = 1.0 - similarity
-            
+            doc_id = self._matrix_doc_ids[idx_int]
+            doc = self.documents[doc_id]
+            distance = 1.0 - sim
             results.append(SearchResult(
                 id=doc.id,
                 content=doc.content,
                 metadata=doc.metadata,
-                semantic_score=distance
+                semantic_score=distance,
             ))
-        
-        # Sort by similarity (lower distance = higher similarity)
-        results.sort(key=lambda x: x.semantic_score)
-        
-        return results[:top_k]
+
+        return results
     
     def keyword_search(
         self,
@@ -289,23 +327,33 @@ class SimpleVectorStore:
         """Delete a document."""
         if doc_id in self.documents:
             del self.documents[doc_id]
+            self._matrix_dirty = True
             if self.storage_path:
                 self._save()
             return True
         return False
-    
-    def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
-        import math
-        
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(x * x for x in b))
-        
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        
-        return dot / (norm_a * norm_b)
+
+    def _rebuild_embedding_matrix(self) -> None:
+        """Rebuild the normalized NumPy embedding matrix from documents."""
+        doc_ids = []
+        embeddings = []
+        for doc_id, doc in self.documents.items():
+            if doc.embedding is not None:
+                doc_ids.append(doc_id)
+                embeddings.append(doc.embedding)
+
+        if not embeddings:
+            self._embedding_matrix = None
+            self._matrix_doc_ids = []
+            self._matrix_dirty = False
+            return
+
+        mat = np.array(embeddings, dtype=np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        self._embedding_matrix = mat / norms
+        self._matrix_doc_ids = doc_ids
+        self._matrix_dirty = False
     
     def _save(self):
         """Persist to disk."""
