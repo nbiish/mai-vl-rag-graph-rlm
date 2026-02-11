@@ -627,6 +627,16 @@ def run_analysis(
         print(f"  Total in store: {len(store.documents)} documents")
         print(f"  Store persisted to: {storage_file}")
 
+        # Free embedder before loading reranker to reduce peak RAM
+        # Embeddings are already computed and cached in store.
+        import gc
+        del embedder
+        store.embedding_provider = None
+        gc.collect()
+        if device == "mps":
+            torch.mps.empty_cache()
+        print("  Embedder freed to reclaim RAM")
+
         # Load reranker
         print("\n[4/6] Loading Qwen3-VL Reranker...")
         reranker_vl = create_qwen3vl_reranker(

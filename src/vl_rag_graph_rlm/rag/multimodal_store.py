@@ -60,7 +60,8 @@ class MultimodalVectorStore:
         embedding_provider: Qwen3VLEmbeddingProvider,
         storage_path: Optional[str] = None,
         use_qwen_reranker: bool = False,
-        reranker_provider: Optional[Any] = None
+        reranker_provider: Optional[Any] = None,
+        transcription_provider: Optional[Any] = None
     ):
         """Initialize multimodal vector store.
         
@@ -69,6 +70,7 @@ class MultimodalVectorStore:
             storage_path: Optional path for persistence
             use_qwen_reranker: Whether to use Qwen3-VL reranker
             reranker_provider: Optional Qwen3-VL reranker provider
+            transcription_provider: Optional audio transcription provider (e.g., Parakeet)
         """
         self.embedding_provider = embedding_provider
         self.storage_path = storage_path
@@ -77,6 +79,7 @@ class MultimodalVectorStore:
         self._hash_to_id: Dict[str, str] = {}  # O(1) hash → doc_id lookup
         self.use_qwen_reranker = use_qwen_reranker
         self.reranker = reranker_provider
+        self.transcription_provider = transcription_provider
 
         # NumPy embedding matrix cache for vectorized search
         self._embedding_matrix: Optional[np.ndarray] = None
@@ -263,6 +266,103 @@ class MultimodalVectorStore:
             self._save()
         
         return doc_id
+    
+    def add_audio(
+        self,
+        audio_path: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        doc_id: Optional[str] = None,
+        instruction: Optional[str] = None,
+        transcribe: bool = True
+    ) -> str:
+        """Add an audio document.
+        
+        Transcribes audio to text using the transcription provider
+        (if available), then embeds the transcript with Qwen3-VL.
+        Falls back to placeholder content if transcription unavailable.
+        
+        Requires: pip install nemo_toolkit[asr] (for Parakeet)
+        
+        Args:
+            audio_path: Path to audio file (.wav, .mp3, .flac, etc.)
+            metadata: Optional metadata
+            doc_id: Optional document ID
+            instruction: Optional embedding instruction
+            transcribe: Whether to transcribe (if False, uses placeholder)
+            
+        Returns:
+            Document ID
+        """
+        doc_id = doc_id or f"audio_{len(self.documents)}"
+        metadata = metadata or {}
+        metadata["type"] = "audio"
+        metadata["audio_path"] = audio_path
+        
+        # Get transcription if provider available
+        transcript = None
+        if transcribe and self.transcription_provider is not None:
+            try:
+                transcript = self.transcription_provider.transcribe(audio_path)
+                metadata["transcribed"] = True
+            except Exception as e:
+                logger.warning(f"Audio transcription failed: {e}")
+                metadata["transcribed"] = False
+                metadata["transcription_error"] = str(e)
+        else:
+            metadata["transcribed"] = False
+        
+        # Use transcript or placeholder
+        content = transcript if transcript else f"[Audio: {audio_path}]"
+        
+        # Skip if content already embedded (O(1) deduplication)
+        content_hash = self._hash_content(content)
+        if content_hash in self._hash_to_id:
+            return self._hash_to_id[content_hash]
+        
+        # Generate text embedding of transcript
+        embedding = self.embedding_provider.embed_text(
+            content,
+            instruction=instruction
+        )
+        
+        doc = MultimodalDocument(
+            id=doc_id,
+            content=content,
+            metadata=metadata,
+            embedding=embedding
+        )
+        
+        self.documents[doc_id] = doc
+        self._content_hashes.add(content_hash)
+        self._hash_to_id[content_hash] = doc_id
+        self._matrix_dirty = True
+        
+        if self.storage_path:
+            self._save()
+        
+        return doc_id
+    
+    def get_audio_transcription(self, doc_id: str) -> Optional[str]:
+        """Get the transcription for an audio document.
+        
+        Args:
+            doc_id: Document ID
+            
+        Returns:
+            Transcription text or None if not an audio document
+        """
+        if doc_id not in self.documents:
+            return None
+        
+        doc = self.documents[doc_id]
+        if doc.metadata.get("type") != "audio":
+            return None
+        
+        # Return content if it was transcribed (not placeholder)
+        if doc.metadata.get("transcribed", False):
+            return doc.content
+        
+        return None
     
     def add_pdf_page(
         self,

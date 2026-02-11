@@ -351,6 +351,24 @@ if HAS_QWEN3VL:
         "MultimodalDocument",
     ])
 
+# Import Parakeet transcription (optional - requires nemo_toolkit[asr])
+try:
+    from vl_rag_graph_rlm.rag.parakeet import (
+        ParakeetTranscriptionProvider,
+        create_parakeet_transcriber
+    )
+    HAS_PARAKEET = True
+except ImportError:
+    HAS_PARAKEET = False
+    ParakeetTranscriptionProvider = None  # type: ignore
+    create_parakeet_transcriber = None  # type: ignore
+
+if HAS_PARAKEET:
+    __all__.extend([
+        "ParakeetTranscriptionProvider",
+        "create_parakeet_transcriber",
+    ])
+
 if HAS_PADDLE:
     __all__.extend([
         "ERNIEClient",

@@ -52,13 +52,16 @@ qwen3vl = [
     "accelerate>=0.27.0",
     "einops>=0.8.0",
 ]
+parakeet = [
+    "nemo_toolkit[asr]>=2.0.0",
+]
 paddle = [
     "paddlenlp>=2.6.0",
     "pymilvus>=2.4.0",
     "jieba>=0.42.0",
 ]
 all = [
-    "vl-rag-graph-rlm[qwen3vl,paddle]",
+    "vl-rag-graph-rlm[qwen3vl,parakeet,paddle]",
 ]
 dev = [
     "pytest>=7.0.0",

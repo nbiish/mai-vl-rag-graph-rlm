@@ -323,11 +323,12 @@ async def query_document(
     store_dir = (p.parent if p.is_file() else p) / ".vrlmrag_store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    # Embeddings + reranker
+    # Embeddings + reranker (loaded sequentially to limit peak RAM)
     store = None
     reranker_vl = None
     if has_qwen3vl:
         import torch
+        import gc
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         embedder = create_qwen3vl_embedder(device=device)
@@ -358,6 +359,15 @@ async def query_document(
                     )
                 except Exception:
                     pass
+
+        # Free embedder before loading reranker to reduce peak RAM
+        # The store keeps embeddings in memory, but the model itself
+        # is no longer needed after all documents are embedded.
+        del embedder
+        store.embedding_provider = None
+        gc.collect()
+        if device == "mps":
+            torch.mps.empty_cache()
 
         reranker_vl = create_qwen3vl_reranker(device=device)
 

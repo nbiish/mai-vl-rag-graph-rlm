@@ -103,6 +103,8 @@ class MultimodalRAGPipeline:
         # Embedding Configuration
         embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B",
         embedding_device: Optional[str] = None,
+        # Transcription Configuration
+        transcription_provider: Optional[Any] = None,
         # Reranker Configuration
         use_reranker: bool = True,
         reranker_model: str = "Qwen/Qwen3-VL-Reranker-2B",
@@ -134,6 +136,7 @@ class MultimodalRAGPipeline:
             llm_api_key: API key for LLM provider
             embedding_model: Qwen3-VL embedding model name
             embedding_device: Device for embeddings (cuda/cpu/mps)
+            transcription_provider: Optional audio transcription provider (e.g., Parakeet)
             use_reranker: Whether to use Qwen3-VL reranker
             reranker_model: Qwen3-VL reranker model name
             top_k: Number of final results to retrieve
@@ -154,41 +157,28 @@ class MultimodalRAGPipeline:
         if verbose:
             logging.basicConfig(level=logging.INFO)
         
-        # Initialize embedding provider
-        logger.info(f"Loading embedding model: {embedding_model}")
-        self.embedding_provider = create_qwen3vl_embedder(
-            model_name=embedding_model,
-            device=embedding_device
-        )
+        # Store config for lazy initialization (NO model loading here)
+        self._embedding_model = embedding_model
+        self._embedding_device = embedding_device
+        self._use_reranker = use_reranker
+        self._reranker_model = reranker_model
+        self._transcription_provider = transcription_provider
+        self._storage_path = storage_path
         
-        # Initialize reranker if requested
-        self.reranker = None
-        if use_reranker:
-            logger.info(f"Loading reranker model: {reranker_model}")
-            self.reranker = create_qwen3vl_reranker(
-                model_name=reranker_model,
-                device=embedding_device
-            )
+        # LLM config (stored, not initialized)
+        self._llm_provider = llm_provider
+        self._llm_model = llm_model
+        self._recursive_model = recursive_model
+        self._llm_api_key = llm_api_key
+        self._max_depth = max_depth
+        self._max_iterations = max_iterations
+        self._temperature = temperature
         
-        # Initialize vector store
-        self.store = MultimodalVectorStore(
-            embedding_provider=self.embedding_provider,
-            storage_path=storage_path,
-            use_qwen_reranker=use_reranker,
-            reranker_provider=self.reranker
-        )
-        
-        # Initialize RLM
-        logger.info(f"Initializing RLM with {llm_provider}")
-        self.rlm = VLRAGGraphRLM(
-            provider=llm_provider,
-            model=llm_model,
-            recursive_model=recursive_model,
-            api_key=llm_api_key,
-            max_depth=max_depth,
-            max_iterations=max_iterations,
-            temperature=temperature
-        )
+        # Lazy-loaded components (None until first access)
+        self._embedding_provider = None
+        self._reranker = None
+        self._store = None
+        self._rlm = None
         
         # Search configuration
         self.top_k = top_k
@@ -202,11 +192,72 @@ class MultimodalRAGPipeline:
         self.extract_tables = extract_tables
         self.extract_images = extract_images
         
-        # Hybrid search components
+        # Hybrid search components (lightweight, no model loading)
         self.rrf = ReciprocalRankFusion(k=60)
         self.keyword_reranker = MultiFactorReranker()
         
-        logger.info("Pipeline initialized successfully")
+        logger.info("Pipeline configured (models will load on first use)")
+    
+    @property
+    def embedding_provider(self):
+        """Lazy-load embedding model on first access."""
+        if self._embedding_provider is None:
+            logger.info(f"Loading embedding model: {self._embedding_model}")
+            self._embedding_provider = create_qwen3vl_embedder(
+                model_name=self._embedding_model,
+                device=self._embedding_device
+            )
+        return self._embedding_provider
+    
+    @property
+    def reranker(self):
+        """Lazy-load reranker model on first access."""
+        if self._reranker is None and self._use_reranker:
+            logger.info(f"Loading reranker model: {self._reranker_model}")
+            self._reranker = create_qwen3vl_reranker(
+                model_name=self._reranker_model,
+                device=self._embedding_device
+            )
+        return self._reranker
+    
+    @property
+    def store(self):
+        """Lazy-load vector store (triggers embedding model load only).
+        
+        Reranker is NOT loaded here - it loads only when reranking
+        is actually performed during search/query.
+        """
+        if self._store is None:
+            self._store = MultimodalVectorStore(
+                embedding_provider=self.embedding_provider,
+                storage_path=self._storage_path,
+                use_qwen_reranker=False,  # Don't trigger reranker load yet
+                reranker_provider=None,
+                transcription_provider=self._transcription_provider
+            )
+        return self._store
+    
+    def _ensure_reranker_on_store(self):
+        """Attach reranker to store when actually needed."""
+        if self._use_reranker and not self.store.use_qwen_reranker:
+            self.store.use_qwen_reranker = True
+            self.store.reranker = self.reranker
+    
+    @property
+    def rlm(self):
+        """Lazy-load RLM on first access."""
+        if self._rlm is None:
+            logger.info(f"Initializing RLM with {self._llm_provider}")
+            self._rlm = VLRAGGraphRLM(
+                provider=self._llm_provider,
+                model=self._llm_model,
+                recursive_model=self._recursive_model,
+                api_key=self._llm_api_key,
+                max_depth=self._max_depth,
+                max_iterations=self._max_iterations,
+                temperature=self._temperature
+            )
+        return self._rlm
     
     def add_pdf(
         self,
@@ -548,6 +599,57 @@ class MultimodalRAGPipeline:
         metadata = metadata or {}
         return self.store.add_text(content=content, metadata=metadata)
     
+    def add_audio(
+        self,
+        audio_path: Union[str, Path],
+        metadata: Optional[Dict[str, Any]] = None,
+        transcribe: bool = True
+    ) -> str:
+        """Add an audio document to the pipeline.
+        
+        Transcribes audio to text (requires transcription provider),
+        then embeds the transcript using Qwen3-VL. Falls back to
+        placeholder if transcription unavailable.
+        
+        Requirements:
+            pip install nemo_toolkit[asr]  # For Parakeet transcription
+        
+        Example:
+            >>> # With transcription (requires Parakeet)
+            >>> pipeline = MultimodalRAGPipeline(
+            ...     transcription_provider=create_parakeet_transcriber()
+            ... )
+            >>> doc_id = pipeline.add_audio("meeting_recording.mp3")
+            
+            >>> # Without transcription (placeholder only)
+            >>> doc_id = pipeline.add_audio("audio.wav", transcribe=False)
+        
+        Args:
+            audio_path: Path to audio file (.wav, .mp3, .flac, etc.)
+            metadata: Additional metadata
+            transcribe: Whether to transcribe audio (if provider available)
+            
+        Returns:
+            Document ID
+        """
+        metadata = metadata or {}
+        return self.store.add_audio(
+            audio_path=str(audio_path),
+            metadata=metadata,
+            transcribe=transcribe
+        )
+    
+    def get_audio_transcription(self, doc_id: str) -> Optional[str]:
+        """Get transcription for an audio document.
+        
+        Args:
+            doc_id: Document ID from add_audio()
+            
+        Returns:
+            Transcription text or None if not available
+        """
+        return self.store.get_audio_transcription(doc_id)
+    
     def query(
         self,
         query: str,
@@ -575,7 +677,7 @@ class MultimodalRAGPipeline:
         start_time = time.time()
         
         top_k = top_k or self.top_k
-        use_reranking = use_reranking if use_reranking is not None else (self.reranker is not None)
+        use_reranking = use_reranking if use_reranking is not None else self._use_reranker
         
         logger.info(f"Querying: {query[:50]}...")
         
@@ -587,8 +689,9 @@ class MultimodalRAGPipeline:
         
         logger.info(f"Retrieved {len(results)} documents")
         
-        # Step 2: Rerank if enabled
-        if use_reranking and self.reranker:
+        # Step 2: Rerank if enabled (loads reranker model only now)
+        if use_reranking and self._use_reranker:
+            self._ensure_reranker_on_store()
             results = self._rerank_results(query, results, top_k=top_k)
             logger.info(f"Reranked to {len(results)} documents")
         else:
@@ -768,8 +871,9 @@ class MultimodalRAGPipeline:
                 top_k=top_k * 2 if use_reranking else top_k
             )
         
-        # Rerank if enabled
-        if use_reranking and self.reranker:
+        # Rerank if enabled (loads reranker model only now)
+        if use_reranking and self._use_reranker:
+            self._ensure_reranker_on_store()
             results = self._rerank_results(query, results, top_k=top_k)
         else:
             results = results[:top_k]
