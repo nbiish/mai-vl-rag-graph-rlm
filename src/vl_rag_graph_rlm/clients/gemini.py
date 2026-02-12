@@ -1,5 +1,6 @@
 """Google Gemini client — uses the google-genai SDK (replaces deprecated google-generativeai)."""
 
+import logging
 import os
 import time
 from collections import defaultdict
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.types import ModelUsageSummary, UsageSummary
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -34,39 +37,86 @@ class GeminiClient(BaseLM):
 
         self.client = genai.Client(api_key=self.api_key)
 
+        # Resolve fallback API key: GOOGLE_API_KEY_FALLBACK env var.
+        self._fallback_api_key: str | None = os.getenv("GOOGLE_API_KEY_FALLBACK")
+        self._fallback_key_client: genai.Client | None = None
+        self._using_fallback_key = False
+
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
         self.model_input_tokens: dict[str, int] = defaultdict(int)
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self._last_usage: ModelUsageSummary | None = None
 
+    def _get_fallback_key_client(self) -> genai.Client:
+        """Lazily create client using the fallback API key."""
+        if self._fallback_key_client is None:
+            self._fallback_key_client = genai.Client(api_key=self._fallback_api_key)
+        return self._fallback_key_client
+
     def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a synchronous completion call."""
+        """Make a synchronous completion call with fallback key retry."""
         content = self._prepare_content(prompt)
         effective_model = model or self.model_name
 
         start_time = time.time()
-        response = self.client.models.generate_content(
-            model=effective_model,
-            contents=content,
-        )
-        self._track_usage(response, effective_model, time.time() - start_time)
-
-        return response.text
+        try:
+            response = self.client.models.generate_content(
+                model=effective_model,
+                contents=content,
+            )
+            self._track_usage(response, effective_model, time.time() - start_time)
+            return response.text
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "gemini: primary key failed (%s: %s), retrying with fallback key",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_client()
+            start_time = time.time()
+            response = fb_client.models.generate_content(
+                model=effective_model,
+                contents=content,
+            )
+            self._track_usage(response, effective_model, time.time() - start_time)
+            self.client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.text
 
     async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make an asynchronous completion call."""
+        """Make an asynchronous completion call with fallback key retry."""
         content = self._prepare_content(prompt)
         effective_model = model or self.model_name
 
         start_time = time.time()
-        response = await self.client.aio.models.generate_content(
-            model=effective_model,
-            contents=content,
-        )
-        self._track_usage(response, effective_model, time.time() - start_time)
-
-        return response.text
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=effective_model,
+                contents=content,
+            )
+            self._track_usage(response, effective_model, time.time() - start_time)
+            return response.text
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "gemini: primary key failed (%s: %s), retrying with fallback key (async)",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_client()
+            start_time = time.time()
+            response = await fb_client.aio.models.generate_content(
+                model=effective_model,
+                contents=content,
+            )
+            self._track_usage(response, effective_model, time.time() - start_time)
+            self.client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.text
 
     def _prepare_content(self, prompt: str | list[dict[str, Any]]) -> str:
         """Convert prompt to Gemini content format."""

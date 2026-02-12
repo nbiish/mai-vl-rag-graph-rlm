@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # If openai_compatible or anthropic_compatible have API keys configured,
 # they are automatically prepended (user set up a custom endpoint on purpose).
 DEFAULT_HIERARCHY = [
+    "modalresearch",
     "sambanova",
     "nebius",
     "groq",
@@ -33,6 +34,7 @@ DEFAULT_HIERARCHY = [
 
 # Map provider names to their API key env var names
 PROVIDER_KEY_MAP = {
+    "modalresearch": "MODAL_RESEARCH_API_KEY",
     "sambanova": "SAMBANOVA_API_KEY",
     "nebius": "NEBIUS_API_KEY",
     "groq": "GROQ_API_KEY",

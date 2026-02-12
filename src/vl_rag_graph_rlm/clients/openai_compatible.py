@@ -78,6 +78,10 @@ class OpenAICompatibleClient(BaseLM):
             "coding": "gpt-4o",
             "fast": "gpt-4o-mini",
         },
+        "modalresearch": {
+            "default": "zai-org/GLM-5-FP8",
+            "flagship": "zai-org/GLM-5-FP8",
+        },
     }
 
     # Fallback models: if the primary model fails (rate limit, token limit,
@@ -96,6 +100,7 @@ class OpenAICompatibleClient(BaseLM):
         "fireworks": "accounts/fireworks/models/mixtral-8x22b-instruct",
         "together": "mistralai/Mixtral-8x22B-Instruct-v0.1",
         "deepseek": "deepseek-reasoner",
+        "modalresearch": "zai-org/GLM-5-FP8",  # single model available
     }
 
     # Environment variable names for API keys
@@ -104,6 +109,7 @@ class OpenAICompatibleClient(BaseLM):
         "openrouter": "OPENROUTER_API_KEY",
         "zenmux": "ZENMUX_API_KEY",
         "zai": "ZAI_API_KEY",
+        "modalresearch": "MODAL_RESEARCH_API_KEY",
     }
 
     def __init__(
@@ -160,6 +166,17 @@ class OpenAICompatibleClient(BaseLM):
             timeout=120.0, max_retries=0, **kwargs
         )
 
+        # Resolve fallback API key: {PROVIDER}_API_KEY_FALLBACK env var.
+        # When the primary key fails (rate limit, auth, credits exhausted),
+        # the client retries with this alternate account key before falling
+        # back to model fallback or provider hierarchy.
+        fb_key_env = self.API_KEY_ENV.get(self.provider, f"{self.provider.upper()}_API_KEY")
+        self._fallback_api_key: str | None = os.getenv(f"{fb_key_env}_FALLBACK")
+        self._fallback_key_client: openai.OpenAI | None = None
+        self._fallback_key_async_client: openai.AsyncOpenAI | None = None
+        self._using_fallback_key = False
+        self._openai_kwargs = kwargs  # stash for lazy fallback client creation
+
         # Resolve fallback model: env var → FALLBACK_MODELS dict → None
         fb_env = os.getenv(
             f"{self.provider.upper()}_FALLBACK_MODEL",
@@ -175,8 +192,30 @@ class OpenAICompatibleClient(BaseLM):
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self._last_usage: ModelUsageSummary | None = None
 
+    def _get_fallback_key_client(self) -> openai.OpenAI:
+        """Lazily create sync client using the fallback API key."""
+        if self._fallback_key_client is None:
+            self._fallback_key_client = openai.OpenAI(
+                api_key=self._fallback_api_key, base_url=self.base_url,
+                timeout=120.0, max_retries=0, **self._openai_kwargs
+            )
+        return self._fallback_key_client
+
+    def _get_fallback_key_async_client(self) -> openai.AsyncOpenAI:
+        """Lazily create async client using the fallback API key."""
+        if self._fallback_key_async_client is None:
+            self._fallback_key_async_client = openai.AsyncOpenAI(
+                api_key=self._fallback_api_key, base_url=self.base_url,
+                timeout=120.0, max_retries=0, **self._openai_kwargs
+            )
+        return self._fallback_key_async_client
+
     def _raw_completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Low-level sync completion (no fallback)."""
+        """Low-level sync completion with fallback API key retry.
+
+        Retry chain: primary key → fallback key (same model, different account).
+        Model fallback and provider hierarchy are handled at higher levels.
+        """
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
 
@@ -184,13 +223,33 @@ class OpenAICompatibleClient(BaseLM):
             raise ValueError("Model name is required")
 
         start_time = time.time()
-        response = self.client.chat.completions.create(model=model, messages=messages)
-        self._track_usage(response, model, time.time() - start_time)
-
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(model=model, messages=messages)
+            self._track_usage(response, model, time.time() - start_time)
+            return response.choices[0].message.content
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "%s: primary key failed (%s: %s), retrying with fallback key",
+                self.provider, type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_client()
+            start_time = time.time()
+            response = fb_client.chat.completions.create(model=model, messages=messages)
+            self._track_usage(response, model, time.time() - start_time)
+            # Promote fallback key to primary for remaining calls this session
+            self.client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.choices[0].message.content
 
     async def _raw_acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
-        """Low-level async completion (no fallback)."""
+        """Low-level async completion with fallback API key retry.
+
+        Retry chain: primary key → fallback key (same model, different account).
+        Model fallback and provider hierarchy are handled at higher levels.
+        """
         messages = self._prepare_messages(prompt)
         model = model or self.model_name
 
@@ -198,12 +257,30 @@ class OpenAICompatibleClient(BaseLM):
             raise ValueError("Model name is required")
 
         start_time = time.time()
-        response = await self.async_client.chat.completions.create(
-            model=model, messages=messages, **kwargs
-        )
-        self._track_usage(response, model, time.time() - start_time)
-
-        return response.choices[0].message.content
+        try:
+            response = await self.async_client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            return response.choices[0].message.content
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "%s: primary key failed (%s: %s), retrying with fallback key (async)",
+                self.provider, type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_async_client()
+            start_time = time.time()
+            response = await fb_client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            # Promote fallback key to primary for remaining calls this session
+            self.async_client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.choices[0].message.content
 
     @staticmethod
     def _is_context_length_error(error: Exception) -> bool:
@@ -871,5 +948,37 @@ class CerebrasClient(OpenAICompatibleClient):
             model_name=model_name or "zai-glm-4.7",
             base_url="https://api.cerebras.ai/v1",
             provider="cerebras",
+            **kwargs,
+        )
+
+
+class ModalResearchClient(OpenAICompatibleClient):
+    """
+    Client for Modal Research API (experimental GLM-5 inference).
+
+    Modal Research provides free OpenAI-compatible inference for GLM-5,
+    Zhipu AI's 745B MoE frontier model (44B active params, MIT license).
+    Runs on 8×B200 GPUs via SGLang with 30-75 tok/s per user.
+
+    Available models (Feb 2026):
+        - zai-org/GLM-5-FP8: GLM-5 745B in FP8 (recommended, frontier-class)
+
+    ⚠️  Experimental provider — free tier has rate limits:
+        - 1 concurrent request per credential
+        - No direct token limits (request-based throttling)
+        - May have intermittent availability
+
+    Get API key: https://modal.com/glm-5-endpoint
+    Blog: https://modal.com/blog/try-glm-5
+    Docs: OpenAI-compatible — use any OpenAI SDK client
+    """
+
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, **kwargs):
+        api_key = api_key or os.getenv("MODAL_RESEARCH_API_KEY")
+        super().__init__(
+            api_key=api_key,
+            model_name=model_name or "zai-org/GLM-5-FP8",
+            base_url="https://api.us-west-2.modal.direct/v1",
+            provider="modalresearch",
             **kwargs,
         )

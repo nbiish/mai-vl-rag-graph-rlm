@@ -91,12 +91,13 @@
 │  │  → uses cheaper recursive_model                         │        │
 │  └─────────────────────────────────────────────────────────┘        │
 │                                                                      │
-│  Providers: SambaNova, Nebius, OpenRouter, OpenAI, Anthropic,       │
-│             Gemini, Groq, Cerebras, DeepSeek, ZenMux, z.ai,        │
-│             Mistral, Fireworks, Together, Azure OpenAI,             │
+│  Providers: Modal Research, SambaNova, Nebius, OpenRouter, OpenAI, │
+│             Anthropic, Gemini, Groq, Cerebras, DeepSeek, ZenMux,  │
+│             z.ai, Mistral, Fireworks, Together, Azure OpenAI,     │
 │             Generic OpenAI, Generic Anthropic, LiteLLM            │
 │                                                                      │
 │  Provider Notes (Feb 2026):                                          │
+│  - Modal Research: GLM-5 745B FP8 (experimental, free, 1 conc req)  │
 │  - ZenMux: Uses provider/model format (e.g., "moonshotai/kimi-k2.5") │
 │  - z.ai: Tries Coding Plan endpoint first, falls back to normal     │
 │  - Groq: LPU, default moonshotai/kimi-k2-instruct-0905              │
@@ -299,6 +300,7 @@ is persisted to `knowledge_graph.md` and merged across runs.
 | `provider_openai_compatible.py` | Generic OpenAI | Yes — all 6 pillars |
 | `provider_anthropic_compatible.py` | Generic Anthropic | Yes — all 6 pillars |
 | `provider_cerebras.py` | Cerebras | Yes — all 6 pillars |
+| `provider_modalresearch.py` | Modal Research | Yes — all 6 pillars |
 
 ### Dependencies
 
@@ -442,10 +444,11 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
-PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
+PROVIDER_HIERARCHY=modalresearch,sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 
 # Provider API keys
 {PROVIDER}_API_KEY=...
+{PROVIDER}_API_KEY_FALLBACK=...   # Optional: fallback key (different account, same provider)
 {PROVIDER}_MODEL=...              # Optional: override default model
 {PROVIDER}_RECURSIVE_MODEL=...    # Optional: cheaper model for recursive calls
 {PROVIDER}_FALLBACK_MODEL=...     # Optional: override fallback model for auto-retry
@@ -511,27 +514,59 @@ When `--provider` is omitted or set to `auto`, the system tries providers in
 `PROVIDER_HIERARCHY` order, skipping any without API keys. If a provider fails
 (rate limit, auth error, network), it automatically falls through to the next.
 
-Default order: `sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...`
+Default order: `modalresearch → sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...`
 
 This enables deploying the same codebase across environments — whichever
 providers have keys configured will be used automatically.
 
 ### Universal Model Fallback
 
-Every provider has a two-tier resilience strategy:
+Every provider has a multi-tier resilience strategy:
 
-1. **Model fallback** (within same provider): If the primary model fails for
-   any reason (rate limit, token limit, downtime, network error), the client
-   automatically retries with a fallback model on the same provider. Defined in
+1. **API key fallback** (same provider, different account): If the primary key
+   fails (rate limit, auth error, credits exhausted), the client retries with
+   `{PROVIDER}_API_KEY_FALLBACK` — a second account key for the same provider.
+   The fallback key is promoted to primary for the rest of the session.
+
+2. **Model fallback** (same provider, different model): If the primary model
+   fails, the client retries with a fallback model. Defined in
    `OpenAICompatibleClient.FALLBACK_MODELS`, overridable per-provider via
    `{PROVIDER}_FALLBACK_MODEL` env var.
 
-2. **Provider fallback** (hierarchy): If both models on a provider fail, the
+3. **Provider fallback** (hierarchy): If all retries on a provider fail, the
    error propagates up and the hierarchy tries the next provider.
 
-This means a single API call has up to `2 × N` chances to succeed (2 models
-per provider × N providers with keys). The z.ai provider adds a third tier
-(endpoint fallback: Coding Plan → Normal) before model fallback kicks in.
+This means a single API call has up to `4 × N` chances to succeed (2 keys ×
+2 models per provider × N providers with keys). The z.ai provider adds an
+additional tier (endpoint fallback: Coding Plan → Normal) before model
+fallback kicks in.
+
+### Fallback API Keys (Multi-Account Support)
+
+Every provider supports a `_FALLBACK` key suffix for multi-account usage:
+
+```bash
+# Pattern: {PROVIDER}_API_KEY_FALLBACK=your_second_account_key
+OPENROUTER_API_KEY=sk-or-v1-primary-account-key
+OPENROUTER_API_KEY_FALLBACK=sk-or-v1-secondary-account-key
+```
+
+The fallback key uses the same provider endpoint and model — only the API key
+(account) changes. This is different from model fallback which changes the
+model on the same key. Use cases:
+
+- **Credit distribution**: Spread API usage across personal and business accounts
+- **Rate limit mitigation**: When one account hits rate limits, fall back to another
+- **Redundancy**: Ensure availability even if one account has billing issues
+
+Full retry chain per provider:
+
+```
+Primary key + primary model
+  → Fallback key + primary model  (same provider, different account)
+    → Primary key + fallback model  (same provider, different model)
+      → Provider hierarchy fallback  (next provider entirely)
+```
 
 ### Interactive Mode
 

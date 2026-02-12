@@ -861,6 +861,12 @@ class MarkdownReportGenerator:
 
 
 SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "modalresearch": {
+        "env_key": "MODAL_RESEARCH_API_KEY",
+        "url": "https://modal.com/glm-5-endpoint",
+        "description": "Modal Research — GLM-5 745B FP8 (experimental, free, 1 concurrent req)",
+        "context_budget": 32000,
+    },
     "sambanova": {
         "env_key": "SAMBANOVA_API_KEY",
         "url": "https://cloud.sambanova.ai",

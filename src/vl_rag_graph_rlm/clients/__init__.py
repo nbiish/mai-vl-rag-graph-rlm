@@ -23,6 +23,7 @@ from vl_rag_graph_rlm.clients.openai_compatible import (
     GenericOpenAIClient,
     GroqClient,
     MistralClient,
+    ModalResearchClient,
     NebiusClient,
     OpenAIClient,
     OpenRouterClient,
@@ -141,6 +142,8 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         return NebiusClient(**kwargs)
     elif provider == "cerebras":
         return CerebrasClient(**kwargs)
+    elif provider == "modalresearch":
+        return ModalResearchClient(**kwargs)
     elif provider == "ollama":
         return OllamaClient(**kwargs)
     elif provider == "litellm":
@@ -177,5 +180,6 @@ __all__ = [
     "SambaNovaClient",
     "NebiusClient",
     "CerebrasClient",
+    "ModalResearchClient",
     "OllamaClient",
 ]

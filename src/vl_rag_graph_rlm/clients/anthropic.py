@@ -1,5 +1,6 @@
 """Anthropic Claude client."""
 
+import logging
 import os
 import time
 from collections import defaultdict
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.types import ModelUsageSummary, UsageSummary
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -31,8 +34,15 @@ class AnthropicClient(BaseLM):
                 "Anthropic API key required. Set ANTHROPIC_API_KEY environment variable or pass api_key explicitly."
             )
 
+        self._anthropic_kwargs = kwargs
         self.client = anthropic.Anthropic(api_key=self.api_key, **kwargs)
         self.async_client = anthropic.AsyncAnthropic(api_key=self.api_key, **kwargs)
+
+        # Resolve fallback API key: ANTHROPIC_API_KEY_FALLBACK env var.
+        self._fallback_api_key: str | None = os.getenv("ANTHROPIC_API_KEY_FALLBACK")
+        self._fallback_key_client: anthropic.Anthropic | None = None
+        self._fallback_key_async_client: anthropic.AsyncAnthropic | None = None
+        self._using_fallback_key = False
 
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
@@ -40,35 +50,89 @@ class AnthropicClient(BaseLM):
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self._last_usage: ModelUsageSummary | None = None
 
+    def _get_fallback_key_client(self) -> anthropic.Anthropic:
+        """Lazily create sync client using the fallback API key."""
+        if self._fallback_key_client is None:
+            self._fallback_key_client = anthropic.Anthropic(
+                api_key=self._fallback_api_key, **self._anthropic_kwargs
+            )
+        return self._fallback_key_client
+
+    def _get_fallback_key_async_client(self) -> anthropic.AsyncAnthropic:
+        """Lazily create async client using the fallback API key."""
+        if self._fallback_key_async_client is None:
+            self._fallback_key_async_client = anthropic.AsyncAnthropic(
+                api_key=self._fallback_api_key, **self._anthropic_kwargs
+            )
+        return self._fallback_key_async_client
+
     def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a synchronous completion call."""
+        """Make a synchronous completion call with fallback key retry."""
         model = model or self.model_name
         messages = self._prepare_messages(prompt)
 
         start_time = time.time()
-        response = self.client.messages.create(
-            model=model,
-            messages=messages,
-            max_tokens=4096,
-        )
-        self._track_usage(response, model, time.time() - start_time)
-
-        return response.content[0].text
+        try:
+            response = self.client.messages.create(
+                model=model,
+                messages=messages,
+                max_tokens=4096,
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            return response.content[0].text
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "anthropic: primary key failed (%s: %s), retrying with fallback key",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_client()
+            start_time = time.time()
+            response = fb_client.messages.create(
+                model=model,
+                messages=messages,
+                max_tokens=4096,
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            self.client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.content[0].text
 
     async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make an asynchronous completion call."""
+        """Make an asynchronous completion call with fallback key retry."""
         model = model or self.model_name
         messages = self._prepare_messages(prompt)
 
         start_time = time.time()
-        response = await self.async_client.messages.create(
-            model=model,
-            messages=messages,
-            max_tokens=4096,
-        )
-        self._track_usage(response, model, time.time() - start_time)
-
-        return response.content[0].text
+        try:
+            response = await self.async_client.messages.create(
+                model=model,
+                messages=messages,
+                max_tokens=4096,
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            return response.content[0].text
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            logger.warning(
+                "anthropic: primary key failed (%s: %s), retrying with fallback key (async)",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            self._using_fallback_key = True
+            fb_client = self._get_fallback_key_async_client()
+            start_time = time.time()
+            response = await fb_client.messages.create(
+                model=model,
+                messages=messages,
+                max_tokens=4096,
+            )
+            self._track_usage(response, model, time.time() - start_time)
+            self.async_client = fb_client
+            self.api_key = self._fallback_api_key
+            return response.content[0].text
 
     def _prepare_messages(self, prompt: str | list[dict[str, Any]]) -> list[dict[str, str]]:
         """Convert prompt to Anthropic message format."""

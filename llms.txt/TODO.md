@@ -2,7 +2,40 @@
 
 > Keep tasks atomic and testable.
 
-## Summary — Feb 12, 2026 Session
+## Summary — Feb 12, 2026 Afternoon Session
+
+**Session Focus**: Modal Research Provider Integration, Fallback API Key System (Multi-Account Support)
+
+### Key Accomplishments
+1. **Modal Research provider integrated** — GLM-5 745B FP8 via OpenAI-compatible endpoint at `api.us-west-2.modal.direct/v1`
+2. **Fallback API key system** — Universal `{PROVIDER}_API_KEY_FALLBACK` support across ALL providers (OpenAI-compatible, Anthropic, Gemini)
+3. **Four-tier resilience** — Primary key → Fallback key → Model fallback → Provider hierarchy
+4. **Live API verified** — Modal Research completion working ("How many r's in strawberry?" → correct answer)
+5. **Fallback key tested** — Invalid primary key auto-falls back to fallback key, promotes it for session
+
+### Files Modified
+- `src/vl_rag_graph_rlm/clients/openai_compatible.py` — Fallback key system in base class + `ModalResearchClient`
+- `src/vl_rag_graph_rlm/clients/anthropic.py` — Fallback key support for Anthropic/AnthropicCompatible
+- `src/vl_rag_graph_rlm/clients/gemini.py` — Fallback key support for Gemini
+- `src/vl_rag_graph_rlm/clients/hierarchy.py` — `modalresearch` in DEFAULT_HIERARCHY + PROVIDER_KEY_MAP
+- `src/vl_rag_graph_rlm/clients/__init__.py` — `ModalResearchClient` import, routing, `__all__`
+- `src/vl_rag_graph_rlm/types.py` — `modalresearch` in ProviderType
+- `src/vl_rag_graph_rlm/rlm_core.py` — `modalresearch` in `_get_default_model` + `_get_recursive_model`
+- `src/vrlmrag.py` — `modalresearch` in SUPPORTED_PROVIDERS
+- `.env` — Modal Research keys + model config
+- `.env.example` — Fallback key docs for ALL providers + Modal Research section
+- `llms.txt/ARCHITECTURE.md` — Fallback key docs, Modal Research in provider list/hierarchy/templates
+- `llms.txt/TODO.md` — This file
+- `templates/provider_modalresearch.py` — New provider template
+
+### Test Results
+- ✅ **Modal Research API**: Completion working — GLM-5-FP8 returns correct answers
+- ✅ **Fallback key mechanism**: Invalid primary → auto-retry with fallback key → success
+- ✅ **Hierarchy updated**: 8/16 providers available, modalresearch first in order
+- ✅ **Import verification**: All new classes import cleanly
+- ✅ **Key promotion**: After fallback key succeeds, it becomes primary for rest of session
+
+## Summary — Feb 12, 2026 Morning Session
 
 **Session Focus**: ZenMux Omni Model Debugging, VLM Fallback Chain, Provider Hierarchy Verification, Video Processing Safeguards
 
