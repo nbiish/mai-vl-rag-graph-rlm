@@ -34,14 +34,25 @@ class LiteLLMClient(BaseLM):
         self.api_base = api_base
         self.extra_kwargs = kwargs
 
+        # Resolve fallback API key: LITELLM_API_KEY_FALLBACK env var.
+        # Also try {PROVIDER}_API_KEY_FALLBACK pattern for common providers
+        self._fallback_api_key: str | None = os.getenv("LITELLM_API_KEY_FALLBACK")
+        self._using_fallback_key = False
+
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
         self.model_input_tokens: dict[str, int] = defaultdict(int)
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self._last_usage: ModelUsageSummary | None = None
 
-    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make a synchronous completion call."""
+    def _completion_with_key(
+        self,
+        prompt: str | list[dict[str, Any]],
+        model: str | None = None,
+        api_key: str | None = None,
+        is_async: bool = False,
+    ) -> str:
+        """Make completion call with specific API key."""
         model = model or self.model_name
         messages = self._prepare_messages(prompt)
 
@@ -50,21 +61,65 @@ class LiteLLMClient(BaseLM):
             "messages": messages,
         }
 
-        if self.api_key:
+        if api_key:
+            call_kwargs["api_key"] = api_key
+        elif self.api_key:
             call_kwargs["api_key"] = self.api_key
+        
         if self.api_base:
             call_kwargs["api_base"] = self.api_base
 
         call_kwargs.update(self.extra_kwargs)
 
         start_time = time.time()
-        response = litellm.completion(**call_kwargs)
+        if is_async:
+            import asyncio
+            response = asyncio.run(litellm.acompletion(**call_kwargs))
+        else:
+            response = litellm.completion(**call_kwargs)
         self._track_usage(response, model, time.time() - start_time)
 
         return response.choices[0].message.content
 
-    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Make an asynchronous completion call."""
+    def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
+        """Make a synchronous completion call with fallback key retry."""
+        try:
+            return self._completion_with_key(prompt, model, self.api_key, is_async=False)
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            
+            logger.warning(
+                "litellm: primary key failed (%s: %s), retrying with fallback key",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            
+            self._using_fallback_key = True
+            return self._completion_with_key(prompt, model, self._fallback_api_key, is_async=False)
+
+    async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
+        """Make an asynchronous completion call with fallback key retry."""
+        try:
+            return await self._acompletion_with_key(prompt, model, self.api_key)
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            
+            logger.warning(
+                "litellm: primary key failed (%s: %s), retrying with fallback key (async)",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            
+            self._using_fallback_key = True
+            return await self._acompletion_with_key(prompt, model, self._fallback_api_key)
+
+    async def _acompletion_with_key(
+        self,
+        prompt: str | list[dict[str, Any]],
+        model: str | None = None,
+        api_key: str | None = None,
+    ) -> str:
+        """Make async completion call with specific API key."""
         model = model or self.model_name
         messages = self._prepare_messages(prompt)
 
@@ -73,8 +128,11 @@ class LiteLLMClient(BaseLM):
             "messages": messages,
         }
 
-        if self.api_key:
+        if api_key:
+            call_kwargs["api_key"] = api_key
+        elif self.api_key:
             call_kwargs["api_key"] = self.api_key
+        
         if self.api_base:
             call_kwargs["api_base"] = self.api_base
 

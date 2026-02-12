@@ -103,6 +103,22 @@ class OpenAICompatibleClient(BaseLM):
         "modalresearch": "zai-org/GLM-5-FP8",  # single model available
     }
 
+    # Long-term thinking / reasoning models need extended timeouts
+    # These models perform chain-of-thought reasoning and can take 30s-600s
+    REASONING_MODELS = {
+        "deepseek-r1", "deepseek-r1-0528", "deepseek-reasoner",
+        "o1", "o1-preview", "o1-mini", "o3", "o3-mini",
+        "glm-5", "glm-5-fp8", "z-ai/glm-5", "zai-org/glm-5",
+        "ernie-5.0-thinking", "baidu/ernie-5.0-thinking",
+        "kimi-k1.5", "moonshotai/kimi-k1.5",
+        "compound", "groq/compound",
+    }
+
+    # Timeout configuration (seconds)
+    DEFAULT_TIMEOUT = 120.0  # 2 minutes for normal models
+    REASONING_TIMEOUT = 300.0  # 5 minutes for reasoning models (can override via env)
+    MAX_REASONING_TIMEOUT = 600.0  # 10 minutes absolute maximum
+
     # Environment variable names for API keys
     API_KEY_ENV = {
         "openai": "OPENAI_API_KEY",
@@ -153,17 +169,20 @@ class OpenAICompatibleClient(BaseLM):
                 f"environment variable or pass api_key explicitly."
             )
 
-        # Initialize OpenAI clients with timeout and no internal retries.
-        # - timeout: prevents infinite hangs; critical for hierarchy fallback
+        # Initialize OpenAI clients with dynamic timeout based on model type.
+        # - timeout: prevents infinite hangs; reasoning models get 300s, normal get 120s
         # - max_retries=0: hierarchy handles retries at provider level;
         #   openai lib's default retry+backoff causes 20-80s delays
+        timeout = self._get_timeout(model_name)
+        logger.debug("%s: using timeout=%.1fs for model=%s", provider, timeout, model_name or "default")
+        
         self.client = openai.OpenAI(
             api_key=self.api_key, base_url=self.base_url,
-            timeout=120.0, max_retries=0, **kwargs
+            timeout=timeout, max_retries=0, **kwargs
         )
         self.async_client = openai.AsyncOpenAI(
             api_key=self.api_key, base_url=self.base_url,
-            timeout=120.0, max_retries=0, **kwargs
+            timeout=timeout, max_retries=0, **kwargs
         )
 
         # Resolve fallback API key: {PROVIDER}_API_KEY_FALLBACK env var.
@@ -195,18 +214,20 @@ class OpenAICompatibleClient(BaseLM):
     def _get_fallback_key_client(self) -> openai.OpenAI:
         """Lazily create sync client using the fallback API key."""
         if self._fallback_key_client is None:
+            timeout = self._get_timeout()
             self._fallback_key_client = openai.OpenAI(
                 api_key=self._fallback_api_key, base_url=self.base_url,
-                timeout=120.0, max_retries=0, **self._openai_kwargs
+                timeout=timeout, max_retries=0, **self._openai_kwargs
             )
         return self._fallback_key_client
 
     def _get_fallback_key_async_client(self) -> openai.AsyncOpenAI:
         """Lazily create async client using the fallback API key."""
         if self._fallback_key_async_client is None:
+            timeout = self._get_timeout()
             self._fallback_key_async_client = openai.AsyncOpenAI(
                 api_key=self._fallback_api_key, base_url=self.base_url,
-                timeout=120.0, max_retries=0, **self._openai_kwargs
+                timeout=timeout, max_retries=0, **self._openai_kwargs
             )
         return self._fallback_key_async_client
 
@@ -281,6 +302,68 @@ class OpenAICompatibleClient(BaseLM):
             self.async_client = fb_client
             self.api_key = self._fallback_api_key
             return response.choices[0].message.content
+
+    @staticmethod
+    def _is_reasoning_model(self, model_name: str | None) -> bool:
+        """Check if model is a long-term thinking/reasoning model needing extended timeout.
+        
+        Args:
+            model_name: Model name to check (defaults to self.model_name)
+            
+        Returns:
+            True if model requires extended timeout
+        """
+        if not model_name:
+            model_name = self.model_name
+        if not model_name:
+            return False
+        
+        model_lower = model_name.lower()
+        # Check for exact matches or model name contains reasoning keywords
+        return (
+            model_lower in self.REASONING_MODELS
+            or any(r in model_lower for r in ("-r1", "-reasoner", "-thinking", 
+                                               "o1-", "o3-", "compound"))
+        )
+
+    def _get_timeout(self, model_name: str | None = None) -> float:
+        """Get appropriate timeout for model (reasoning vs normal).
+        
+        Priority:
+        1. VRLMRAG_REASONING_TIMEOUT env var (for reasoning models)
+        2. VRLMRAG_TIMEOUT env var (for all models)
+        3. REASONING_TIMEOUT (300s) for reasoning models
+        4. DEFAULT_TIMEOUT (120s) for normal models
+        
+        Args:
+            model_name: Model name to check (defaults to self.model_name)
+            
+        Returns:
+            Timeout in seconds
+        """
+        is_reasoning = self._is_reasoning_model(model_name)
+        
+        # Check env overrides
+        if is_reasoning:
+            env_timeout = os.getenv("VRLMRAG_REASONING_TIMEOUT")
+            if env_timeout:
+                try:
+                    return min(float(env_timeout), self.MAX_REASONING_TIMEOUT)
+                except ValueError:
+                    pass
+        
+        # General timeout override
+        env_timeout = os.getenv("VRLMRAG_TIMEOUT")
+        if env_timeout:
+            try:
+                return float(env_timeout)
+            except ValueError:
+                pass
+        
+        # Default based on model type
+        if is_reasoning:
+            return self.REASONING_TIMEOUT
+        return self.DEFAULT_TIMEOUT
 
     @staticmethod
     def _is_context_length_error(error: Exception) -> bool:
@@ -535,16 +618,20 @@ class ZaiClient(OpenAICompatibleClient):
     def _get_fallback_client(self) -> openai.OpenAI:
         """Lazily create fallback client pointing to normal z.ai endpoint."""
         if self._fallback_client is None:
+            timeout = self._get_timeout()
             self._fallback_client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL
+                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL,
+                timeout=timeout, max_retries=0
             )
         return self._fallback_client
 
     def _get_fallback_async_client(self) -> openai.AsyncOpenAI:
         """Lazily create async fallback client pointing to normal z.ai endpoint."""
         if self._fallback_async_client is None:
+            timeout = self._get_timeout()
             self._fallback_async_client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL
+                api_key=self.api_key, base_url=self.ZAI_NORMAL_URL,
+                timeout=timeout, max_retries=0
             )
         return self._fallback_async_client
 

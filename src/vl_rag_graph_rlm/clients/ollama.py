@@ -75,6 +75,10 @@ class OllamaClient(BaseLM):
         self.api_base = api_base or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
         
+        # Resolve fallback API key: OLLAMA_API_KEY_FALLBACK env var.
+        self._fallback_api_key: str | None = os.getenv("OLLAMA_API_KEY_FALLBACK")
+        self._using_fallback_key = False
+        
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
         self.model_input_tokens: dict[str, int] = defaultdict(int)
@@ -163,10 +167,11 @@ class OllamaClient(BaseLM):
         except Exception as e:
             raise RuntimeError(f"Ollama request failed: {e}")
     
-    def _api_completion(
+    def _api_completion_with_key(
         self,
         prompt: str | list[dict[str, Any]],
         model: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> str:
         """Make completion request using Anthropic SDK via Ollama's Anthropic compatibility layer.
         
@@ -195,7 +200,7 @@ class OllamaClient(BaseLM):
         # API key is required but ignored by Ollama
         client = anthropic.Anthropic(
             base_url=self.api_base,  # e.g., http://localhost:11434
-            api_key=self.api_key or "ollama",  # Required but ignored
+            api_key=api_key or "ollama",  # Required but ignored
             timeout=120.0,
         )
         
@@ -233,6 +238,28 @@ class OllamaClient(BaseLM):
             
         except Exception as e:
             raise RuntimeError(f"Ollama Anthropic API call failed: {e}")
+
+    def _api_completion(
+        self,
+        prompt: str | list[dict[str, Any]],
+        model: Optional[str] = None,
+    ) -> str:
+        """API completion with fallback key retry."""
+        try:
+            return self._api_completion_with_key(prompt, model, self.api_key)
+        except Exception as primary_err:
+            if not self._fallback_api_key or self._using_fallback_key:
+                raise
+            
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "ollama: primary key failed (%s: %s), retrying with fallback key",
+                type(primary_err).__name__, str(primary_err)[:120],
+            )
+            
+            self._using_fallback_key = True
+            return self._api_completion_with_key(prompt, model, self._fallback_api_key)
     
     def _track_usage(self, model: str, prompt: str, response: str, duration: float) -> None:
         """Track usage statistics (local mode)."""

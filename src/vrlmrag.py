@@ -2693,11 +2693,53 @@ def run_collection_add(
             store = MultimodalVectorStore(
                 embedding_provider=embedder, storage_path=storage_file,
             )
+            existing = len(store.documents)
+            if existing:
+                print(f"  Loaded {existing} existing embeddings")
+
+            for chunk in all_chunks:
+                content = chunk.get("content", "")
+                if not content.strip():
+                    continue
+                if store.content_exists(content):
+                    skipped_count += 1
+                    continue
+                metadata = {"type": chunk.get("type", "text")}
+                if "slide" in chunk:
+                    metadata["slide"] = chunk["slide"]
+                store.add_text(
+                    content=content, metadata=metadata,
+                    instruction=_DOCUMENT_INSTRUCTION,
+                )
+                embedded_count += 1
+
+            print(f"  New: {embedded_count} | Skipped: {skipped_count} | Total: {len(store.documents)}")
         elif use_api and HAS_API_EMBEDDING:
             embedder = create_api_embedder()
             store = MultimodalVectorStore(
                 embedding_provider=embedder, storage_path=storage_file,
             )
+            existing = len(store.documents)
+            if existing:
+                print(f"  Loaded {existing} existing embeddings")
+
+            for chunk in all_chunks:
+                content = chunk.get("content", "")
+                if not content.strip():
+                    continue
+                if store.content_exists(content):
+                    skipped_count += 1
+                    continue
+                metadata = {"type": chunk.get("type", "text")}
+                if "slide" in chunk:
+                    metadata["slide"] = chunk["slide"]
+                store.add_text(
+                    content=content, metadata=metadata,
+                    instruction=_DOCUMENT_INSTRUCTION,
+                )
+                embedded_count += 1
+
+            print(f"  New: {embedded_count} | Skipped: {skipped_count} | Total: {len(store.documents)}")
         elif HAS_QWEN3VL:
             _emb_model = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
             _coll_lock_ctx = local_model_lock(_emb_model, description=f"CLI collection_add:{slug} (Qwen3-VL)")
@@ -3176,7 +3218,7 @@ def main():
     )
 
     parser.add_argument(
-        "--quiet", "-q", action="store_true",
+        "--quiet", "-Q", action="store_true",
         help="Suppress all non-error output (silent mode)",
     )
 

@@ -2,6 +2,192 @@
 
 > Keep tasks atomic and testable.
 
+## Summary — Feb 12, 2026 Evening Session (Bug Fix & Testing)
+
+**Session Focus**: CLI Bug Fixes, Collection Testing, Documentation Updates
+
+### Critical Bugs Fixed
+
+1. **Argparse Conflict Fixed** — `--quiet/-q` conflicted with `--query/-q`
+   - Changed `--quiet` short flag from `-q` to `-Q`
+   - File: `src/vrlmrag.py` line 3179
+
+2. **Missing Dependency Documented** — `flashrank` not installed by default
+   - Required for reranker functionality
+   - Fix: `uv pip install -e ".[reranker]"`
+   - Also need to update pyproject.toml dependency-groups
+
+3. **CRITICAL: API Embedding Path Bug** — Collection add wasn't embedding documents in API mode
+   - **Root Cause**: `run_collection_add()` had document embedding loop only in Qwen3VL path, not in API/text-only paths
+   - **Impact**: Collections created with 0 embeddings when using API mode (default)
+   - **Fix**: Added document embedding loops to both API path (lines 2696-2721) and text-only path (lines 2688-2716)
+   - Files Modified: `src/vrlmrag.py`
+
+### Universal Fallback API Key System (Feb 12, 2026)
+
+**Problem**: Users have multiple API keys per provider (free/paid tiers, business/personal accounts, spending limits) but system only supported single keys.
+
+**Solution**: Implemented `{PROVIDER}_API_KEY_FALLBACK` env var pattern across ALL 20+ providers.
+
+**Fallback Key Behavior**:
+1. Primary key fails (rate limit, auth, credits, timeout)
+2. System retries SAME provider with FALLBACK key
+3. If fallback succeeds → promoted to primary for remaining session
+4. If fallback also fails → fall through to provider hierarchy
+
+**Four-Tier Resilience Chain**:
+```
+Primary Key → Fallback Key → Model Fallback → Provider Hierarchy
+     (same account)   (different account)  (same key, diff model)  (diff provider)
+```
+
+**Supported Providers** (all 20+ have fallback key support):
+| Provider | Primary Env Var | Fallback Env Var | Client Implementation |
+|----------|-----------------|-------------------|----------------------|
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_API_KEY_FALLBACK` | `OpenAICompatibleClient` |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY_FALLBACK` | `AnthropicClient` |
+| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY_FALLBACK` | `OpenRouterClient` |
+| ZenMux | `ZENMUX_API_KEY` | `ZENMUX_API_KEY_FALLBACK` | `ZenMuxClient` |
+| Z.AI | `ZAI_API_KEY` | `ZAI_API_KEY_FALLBACK` | `ZaiClient` |
+| Google/Gemini | `GOOGLE_API_KEY` | `GOOGLE_API_KEY_FALLBACK` | `GeminiClient` |
+| Groq | `GROQ_API_KEY` | `GROQ_API_KEY_FALLBACK` | `GroqClient` |
+| Cerebras | `CEREBRAS_API_KEY` | `CEREBRAS_API_KEY_FALLBACK` | `CerebrasClient` |
+| SambaNova | `SAMBANOVA_API_KEY` | `SAMBANOVA_API_KEY_FALLBACK` | `SambaNovaClient` |
+| Nebius | `NEBIUS_API_KEY` | `NEBIUS_API_KEY_FALLBACK` | `NebiusClient` |
+| Modal Research | `MODAL_RESEARCH_API_KEY` | `MODAL_RESEARCH_API_KEY_FALLBACK` | `ModalResearchClient` |
+| Mistral | `MISTRAL_API_KEY` | `MISTRAL_API_KEY_FALLBACK` | `MistralClient` |
+| Fireworks | `FIREWORKS_API_KEY` | `FIREWORKS_API_KEY_FALLBACK` | `FireworksClient` |
+| Together | `TOGETHER_API_KEY` | `TOGETHER_API_KEY_FALLBACK` | `TogetherClient` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_KEY_FALLBACK` | `DeepSeekClient` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` | `AZURE_OPENAI_API_KEY_FALLBACK` | `AzureOpenAIClient` |
+| OpenAI-Compatible | `OPENAI_COMPATIBLE_API_KEY` | `OPENAI_COMPATIBLE_API_KEY_FALLBACK` | `GenericOpenAIClient` |
+| Anthropic-Compatible | `ANTHROPIC_COMPATIBLE_API_KEY` | `ANTHROPIC_COMPATIBLE_API_KEY_FALLBACK` | `AnthropicCompatibleClient` |
+| Ollama | `OLLAMA_API_KEY` | `OLLAMA_API_KEY_FALLBACK` | `OllamaClient` (API mode) |
+| LiteLLM | `LITELLM_API_KEY` | `LITELLM_API_KEY_FALLBACK` | `LiteLLMClient` |
+
+**Files Modified**:
+- `src/vl_rag_graph_rlm/clients/openai_compatible.py`:
+  - Added `_fallback_api_key` resolution via `{PROVIDER}_API_KEY_FALLBACK` env var
+  - Added `_fallback_key_client` and `_fallback_key_async_client` lazy initialization
+  - Added `_get_fallback_key_client()` and `_get_fallback_key_async_client()` methods
+  - Modified `_raw_completion()` to retry with fallback key on primary failure
+  - Modified `_raw_acompletion()` to retry with fallback key on primary failure
+  - Fallback key promoted to primary on successful retry (session persistence)
+- `src/vl_rag_graph_rlm/clients/anthropic.py`:
+  - Added fallback key support via `ANTHROPIC_API_KEY_FALLBACK` env var
+  - Added `_get_fallback_key_client()` and `_get_fallback_key_async_client()` methods
+  - Modified `completion()` and `acompletion()` to retry with fallback key
+- `src/vl_rag_graph_rlm/clients/gemini.py`:
+  - Added fallback key support via `GOOGLE_API_KEY_FALLBACK` env var
+  - Added `_get_fallback_key_client()` method
+  - Modified `completion()` to retry with fallback key
+- `src/vl_rag_graph_rlm/clients/ollama.py`:
+  - Added fallback key support for API mode via `OLLAMA_API_KEY_FALLBACK` env var
+  - Added `_api_completion_with_key()` helper method
+  - Modified `_api_completion()` to retry with fallback key
+- `src/vl_rag_graph_rlm/clients/litellm.py`:
+  - Added fallback key support via `LITELLM_API_KEY_FALLBACK` env var
+  - Added `_completion_with_key()` and `_acompletion_with_key()` helper methods
+  - Modified `completion()` and `acompletion()` to retry with fallback key
+- `.env` — Added fallback key placeholders for all providers
+- `.env.example` — Comprehensive fallback key documentation with examples
+
+**Example Configuration**:
+```bash
+# Primary + Fallback accounts for credit distribution
+OPENROUTER_API_KEY=sk-or-v1-primary-account-key
+OPENROUTER_API_KEY_FALLBACK=sk-or-v1-secondary-account-key
+
+# Free + Paid tier accounts
+ANTHROPIC_API_KEY=sk-ant-free-tier-key
+ANTHROPIC_API_KEY_FALLBACK=sk-ant-paid-tier-key
+
+# Business + Personal accounts
+OPENAI_API_KEY=sk-business-account-key
+OPENAI_API_KEY_FALLBACK=sk-personal-account-key
+```
+
+**Use Cases**:
+- **Credit Distribution**: Split usage across two OpenRouter accounts
+- **Free + Paid Tiers**: Use free tier first, fallback to paid on rate limits
+- **Multi-Account Resilience**: Business vs personal spending limits
+- **A/B Testing**: Test different account configurations
+
+### Timeout Configuration for Long-Term Thinking Models
+
+**Problem**: Long-term thinking models (DeepSeek-R1, o1, o3, GLM-5, etc.) can take 30s-600s for complex reasoning, but default 120s timeout was too short.
+
+**Solution**: Implemented dynamic timeout system with reasoning model detection.
+
+**Timeout Strategy**:
+| Model Type | Default | Max | Override Env Var |
+|------------|---------|-----|------------------|
+| Normal | 120s | - | `VRLMRAG_TIMEOUT` |
+| Reasoning | 300s | 600s | `VRLMRAG_REASONING_TIMEOUT` |
+| All | - | - | `VRLMRAG_TIMEOUT` (global override) |
+
+**Recognized Reasoning Models** (auto-detected):
+- DeepSeek: `deepseek-r1`, `deepseek-reasoner`, `deepseek-r1-0528`
+- OpenAI: `o1`, `o1-preview`, `o1-mini`, `o3`, `o3-mini`
+- Z.AI: `glm-5`, `glm-5-fp8`, `z-ai/glm-5`
+- Baidu: `ernie-5.0-thinking`
+- Moonshot: `kimi-k1.5`
+- Groq: `compound`
+
+**Detection Method**: Exact match in `REASONING_MODELS` set OR pattern match (`-r1`, `-reasoner`, `-thinking`, `o1-`, `o3-`, `compound`).
+
+**Files Modified**:
+- `src/vl_rag_graph_rlm/clients/openai_compatible.py`:
+  - Added `REASONING_MODELS` set (line 108-115)
+  - Added `DEFAULT_TIMEOUT` (120s), `REASONING_TIMEOUT` (300s), `MAX_REASONING_TIMEOUT` (600s) constants
+  - Added `_is_reasoning_model()` method for detection
+  - Added `_get_timeout()` method with env var override logic
+  - Updated `__init__` to use dynamic timeout
+  - Updated `_get_fallback_key_client()` and `_get_fallback_key_async_client()`
+  - Updated `ZaiClient._get_fallback_client()` and `_get_fallback_async_client()`
+- `.env.example`: Added timeout configuration section
+
+**Environment Variables**:
+```bash
+VRLMRAG_TIMEOUT=180              # Override all model timeouts
+VRLMRAG_REASONING_TIMEOUT=600    # Override only reasoning model timeouts
+```
+
+### Test Results
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Provider hierarchy | ✅ | 9/17 providers ready |
+| Collection create | ✅ | Works with 15 embeddings |
+| Collection query | ✅ | Dense: 15, Keyword: 14, RRF: 15, Reranked: 10 |
+| Full pipeline | ✅ | Query answered in 5.68s with 10 sources |
+
+### Provider Hierarchy Status (Feb 12, 2026)
+```
+1. sambanova       ✓ READY
+2. modalresearch   ✓ READY
+3. nebius          ✓ READY
+4. ollama          ✓ READY
+5. groq            ✓ READY
+6. cerebras        ✓ READY
+7. zai             ✓ READY
+8. zenmux          ✓ READY
+9. openrouter      ✓ READY
+```
+
+### Collection Test Results
+- **Created**: `test-international-business`
+- **Document**: "Overview of International Business.pptx"
+- **Chunks**: 15 (text-only, no images in this test)
+- **Embeddings**: 15 (fixed - was 0 before)
+- **Query**: "What is international business?"
+- **Results**: Dense 15, Keyword 14, RRF 15, Reranked 10
+- **Response Time**: 5.68s
+
+### Files Modified This Session
+- `src/vrlmrag.py` — Fixed argparse conflict, added embedding loops to API/text-only paths
+- `llms.txt/TODO.md` — This documentation
+
 ## Summary — Feb 12, 2026 Afternoon Session
 
 **Session Focus**: Modal Research Provider Integration, Fallback API Key System (Multi-Account Support)
