@@ -1,3 +1,23 @@
+<div align="center">
+  <hr width="50%">
+  <h3>Support This Project</h3>
+  <table style="border: none; border-collapse: collapse;">
+    <tr style="border: none;">
+      <td align="center" style="border: none; vertical-align: middle; padding: 20px;">
+        <h4>Stripe</h4>
+        <img src="qr-stripe-donation.png" alt="Scan to donate" width="180"/>
+        <p><a href="https://raw.githubusercontent.com/nbiish/license-for-all-works/8e9b73b269add9161dc04bbdd79f818c40fca14e/qr-stripe-donation.png">Donate via Stripe</a></p>
+      </td>
+      <td align="center" style="border: none; vertical-align: middle; padding: 20px;">
+        <a href="https://www.buymeacoffee.com/nbiish">
+          <img src="buy-me-a-coffee.svg" alt="Buy me a coffee" />
+        </a>
+      </td>
+    </tr>
+  </table>
+  <hr width="50%">
+</div>
+
 # VL-RAG-Graph-RLM
 
 **Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
