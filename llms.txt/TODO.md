@@ -7,6 +7,51 @@
 - [ ] Verify interactive mode end-to-end with persistent KG + incremental document addition
 - [ ] Verify full pipeline end-to-end with Qwen3-VL embedding + reranking + RAG + Graph + RLM
 
+## Issues Found — Feb 12, 2026 (Hierarchy Failure Testing)
+
+### Critical: No Graceful Degradation When All Providers Fail
+- **Problem**: When ALL API providers fail (invalid keys, rate limits, no credits), system crashes with unhandled errors
+- **Test Results**:
+  - PowerPoint with all invalid API keys → Providers exhaust hierarchy → crashes on embedding API failure
+  - Video with all invalid API keys → Same pattern, crashes during query phase
+- **Error Chain**: SambaNova (fail) → Nebius (fail) → Groq (fail) → ... → OpenRouter (fail) → Embedding API fails → Crash
+- **Root Cause**: API embedding (`openai/text-embedding-3-small`) requires valid OpenRouter key even when hierarchy falls through
+
+### Video Processing System Crash Prevention (Feb 12, 2026)
+- [x] **Media safety block at CLI level** — Video/audio files force API mode regardless of `--local` flag (lines 2626-2632)
+- [x] **Critical safety wrapper in `_process_media()`** — All media processing wrapped in try-except to prevent system crashes
+- [x] **Graceful degradation on failure** — Returns empty document with error message instead of crashing
+- [x] **Parakeet transcription error handling** — Catches and logs errors without crashing
+- [x] **ffmpeg extraction error handling** — Continues without audio/frames if extraction fails
+
+### Needed Fixes
+- [ ] Add `--offline` mode that uses local Qwen3-VL embeddings when all API providers fail
+- [ ] Add graceful error handling when hierarchy exhausted — return helpful message instead of crash
+- [ ] Add local embedding provider fallback for API embedding failures
+- [ ] Add circuit breaker for entire provider hierarchy (not just individual providers)
+- [ ] Document minimum required providers for video processing (OpenRouter for embeddings + ZenMux/Kimi for VLM)
+
+## Completed (Feb 12, 2026)
+
+### Model Documentation & VLM Fallback Update (Feb 12, 2026)
+- [x] **MODELS.md created** — Documented 342 OpenRouter models + 100 ZenMux models sorted by release date
+- [x] **VLM fallback updated** — `moonshotai/kimi-k2.5` replaces Kimi K2 (256K context, text+image multimodal)
+- [x] **.env updated** — `VRLMRAG_VLM_FALLBACK_MODEL=moonshotai/kimi-k2.5`
+- [x] **.env.example updated** — Same Kimi K2.5 fallback documentation
+- [x] **api_embedding.py updated** — `DEFAULT_VLM_FALLBACK_MODEL=moonshotai/kimi-k2.5`
+
+### Hierarchy Failure Testing (Feb 12, 2026)
+- [x] **Provider hierarchy verified** — 7/15 providers ready (sambanova, nebius, groq, cerebras, zai, zenmux, openrouter)
+- [x] **PowerPoint test with invalid keys** — Hierarchy falls through all providers, crashes on embedding failure
+- [x] **Video test with invalid keys** — Same pattern, no offline fallback available
+- [x] **Local mode test attempted** — Should work for PowerPoint (Qwen3-VL), but video blocked
+
+### API-Default Mode & Video Processing (Feb 12, 2026)
+- [x] **CLI defaults to API mode** — `--local` flag required to opt into local models (default: API)
+- [x] **Video processing tested** — Spectrograms video processed via ZenMux omni + Kimi K2.5 fallback
+- [x] **Media safety block verified** — Video/audio files force API mode regardless of `--local` flag
+- [x] **MCP server API-default verified** — `use_api: bool = True` in MCPSettings
+
 ## Roadmap — v0.2.0
 
 ### Document Processing
@@ -68,6 +113,38 @@
 - [ ] Rate limiting / retry logic with exponential backoff
 
 ## Completed (v0.1.x — Feb 2026)
+
+### API-Default Mode & Media Safety (Feb 11, 2026)
+- [x] **API mode is now the default** — local Qwen3-VL requires explicit `--local` flag or `VRLMRAG_LOCAL=true`
+- [x] **`--local` CLI flag**: Opt into local Qwen3-VL models (replaces old `--use-api` flag)
+- [x] **Media safety block**: Local models are BLOCKED for video/audio files — always forces API mode to prevent OOM crashes
+- [x] **MCP server defaults to API mode** (`use_api: bool = True` in MCPSettings)
+- [x] **Audio/video processing via DocumentProcessor**: `_process_media()` extracts audio (ffmpeg), transcribes (Parakeet ASR local), extracts key frames
+- [x] **Video frame embedding**: Frames embedded via `add_image()` in all paths (run_analysis, interactive, collections, MCP)
+- [x] **Parakeet ASR integration**: `create_parakeet_transcriber()` wired into DocumentProcessor for local audio transcription
+- [x] **API embedding circuit breaker**: VLM disabled after 3 consecutive failures — prevents hanging on broken providers
+- [x] **API client timeouts**: 30s embedding, 15s VLM — prevents infinite hangs on slow/broken APIs
+- [x] **`.env.example` updated**: Audio/video config, embedding mode toggle docs, Parakeet model override
+
+### Persistent Vector Store & Incremental Re-indexing (Feb 11, 2026)
+- [x] **Manifest-based change detection**: `manifest.json` tracks indexed files + mtimes in `.vrlmrag_store/`
+- [x] **Smart store reuse (CLI)**: Re-running on unchanged files prints "Store up-to-date" and skips all document processing + embedding
+- [x] **Incremental updates (CLI)**: Only new/modified files are re-processed; existing embeddings preserved via SHA-256 dedup
+- [x] **Smart store reuse (MCP)**: `query_document` and `query_text_document` use manifest to skip re-processing
+- [x] **CWD default (MCP)**: `input_path="."` or empty defaults to current working directory
+- [x] **Chunk reconstruction from store**: When store is reused (no processing), chunks are reconstructed from stored documents for fallback reranking
+- [x] **KG merge on incremental update**: New KG fragments are merged with existing knowledge graph instead of replacing
+- [x] **Store status in response**: MCP tools report "store reused" vs "store updated" + embedding count in response footer
+- [x] **Manifest helpers**: `_load_manifest()`, `_save_manifest()`, `_scan_supported_files()`, `_detect_file_changes()` shared across CLI and MCP
+
+### SambaNova DeepSeek-V3 Context Fix (Feb 11, 2026)
+- [x] **Default model switched**: `DeepSeek-V3.2` (8K tokens) → `DeepSeek-V3-0324` (32K context, production)
+- [x] **Fallback model**: `DeepSeek-V3.1` (32K+ context) — safe fallback for any V3-0324 error
+- [x] **Context budget increased**: SambaNova `context_budget` 8,000 → 32,000 chars (matching 32K token window)
+- [x] **Smart context truncation**: `completion()` detects "maximum context length" errors → truncates input by 50% → retries before model fallback
+- [x] **Async truncation**: Same safeguard in `acompletion()` for MCP server async paths
+- [x] **DeepSeek-V3.2 marked as legacy**: `legacy_8k` tag in RECOMMENDED_MODELS, warning in docstrings and .env.example
+- [x] **All hardcoded defaults updated**: `rlm_core.py`, `openai_compatible.py`, `vrlmrag.py` SUPPORTED_PROVIDERS
 
 ### Named Persistent Collections (Feb 8, 2026)
 - [x] **`collections.py` module**: CRUD for named collections (`create`, `list`, `delete`, `load_meta`, `record_source`)

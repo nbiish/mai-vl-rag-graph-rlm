@@ -101,6 +101,11 @@ from vl_rag_graph_rlm.mcp_server.settings import (
     MCPSettings,
     load_settings,
 )
+from vl_rag_graph_rlm.local_model_lock import (
+    local_model_lock,
+    lock_status,
+    is_local_provider,
+)
 
 logger = logging.getLogger("vl_rag_graph_rlm.mcp_server")
 
@@ -126,7 +131,7 @@ logger.info(
 # Supported providers (duplicated from vrlmrag.py for context budgets)
 # ---------------------------------------------------------------------------
 _PROVIDER_BUDGETS: dict[str, int] = {
-    "sambanova": 8000,
+    "sambanova": 32000,
     "nebius": 100000,
     "openrouter": 32000,
     "openai": 32000,
@@ -249,6 +254,81 @@ def _get_settings(ctx: Context) -> MCPSettings:
         return load_settings()
 
 
+# ---------------------------------------------------------------------------
+# Store persistence helpers — manifest tracks indexed files for smart reuse
+# ---------------------------------------------------------------------------
+_SUPPORTED_EXTENSIONS = {
+    ".txt", ".md", ".pptx", ".pdf", ".docx",
+    ".mp4", ".wav", ".mp3", ".flac", ".m4a",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
+}
+
+
+def _resolve_input_path(input_path: Optional[str]) -> Path:
+    """Resolve input_path, defaulting to CWD if None or '.'."""
+    if not input_path or input_path.strip() in ("", "."):
+        return Path.cwd()
+    return Path(input_path).resolve()
+
+
+def _store_dir_for(input_path: Path) -> Path:
+    """Compute the .vrlmrag_store directory for a given input path."""
+    if input_path.is_file():
+        return input_path.parent / ".vrlmrag_store"
+    return input_path / ".vrlmrag_store"
+
+
+def _load_manifest(store_dir: Path) -> dict:
+    """Load the file manifest (tracks indexed files + mtimes)."""
+    manifest_file = store_dir / "manifest.json"
+    if manifest_file.exists():
+        try:
+            return json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_manifest(store_dir: Path, manifest: dict) -> None:
+    """Persist the file manifest."""
+    store_dir.mkdir(parents=True, exist_ok=True)
+    manifest_file = store_dir / "manifest.json"
+    manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _scan_files(input_path: Path) -> dict[str, float]:
+    """Scan input_path for supported files, returning {path: mtime}."""
+    files: dict[str, float] = {}
+    if input_path.is_file():
+        if input_path.suffix.lower() in _SUPPORTED_EXTENSIONS:
+            files[str(input_path)] = input_path.stat().st_mtime
+    elif input_path.is_dir():
+        for f in sorted(input_path.rglob("*")):
+            if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS:
+                # Skip hidden dirs and .vrlmrag_store
+                parts = f.relative_to(input_path).parts
+                if any(p.startswith(".") for p in parts):
+                    continue
+                files[str(f)] = f.stat().st_mtime
+    return files
+
+
+def _detect_changes(current_files: dict[str, float], manifest: dict) -> tuple[list[str], list[str]]:
+    """Compare current files against manifest.
+
+    Returns:
+        (new_or_modified, deleted) — lists of file paths
+    """
+    indexed = manifest.get("files", {})
+    new_or_modified = []
+    for fpath, mtime in current_files.items():
+        prev_mtime = indexed.get(fpath)
+        if prev_mtime is None or mtime > prev_mtime:
+            new_or_modified.append(fpath)
+    deleted = [f for f in indexed if f not in current_files]
+    return new_or_modified, deleted
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # MCP Tools
 # ═══════════════════════════════════════════════════════════════════════════
@@ -274,8 +354,16 @@ async def query_document(
     By default uses the provider hierarchy system to pick the best
     available LLM provider automatically.
 
+    **Persistent vector store:** Embeddings and knowledge graphs are
+    saved to a `.vrlmrag_store/` directory next to the input.  On
+    subsequent queries the existing store is reloaded automatically —
+    only new or modified files are re-processed (tracked via a file
+    manifest).  This means you can iterate on the same directory
+    without re-embedding everything each time.
+
     Args:
-        input_path: Path to a file (.pptx, .pdf, .txt, .md) or folder.
+        input_path: Path to a file (.pptx, .pdf, .txt, .md, .mp4, .wav, .mp3) or folder.
+                    Use "." or leave empty to query the current working directory.
         query: The question to answer about the document(s).
         provider: Override LLM provider (default: auto/hierarchy).
         model: Override LLM model name.
@@ -296,99 +384,204 @@ async def query_document(
     from vl_rag_graph_rlm.rag import CompositeReranker, ReciprocalRankFusion
 
     try:
-        from vl_rag_graph_rlm.rag.qwen3vl import (
-            create_qwen3vl_embedder,
-            create_qwen3vl_reranker,
-        )
+        from vl_rag_graph_rlm.rag.qwen3vl import create_qwen3vl_embedder
         from vl_rag_graph_rlm.rag.multimodal_store import MultimodalVectorStore
 
         has_qwen3vl = True
     except ImportError:
         has_qwen3vl = False
 
+    try:
+        from vl_rag_graph_rlm.rag.api_embedding import create_api_embedder
+        has_api_embedding = True
+    except ImportError:
+        has_api_embedding = False
+
+    try:
+        from vl_rag_graph_rlm.rag.flashrank_reranker import create_flashrank_reranker
+        has_flashrank = True
+    except ImportError:
+        has_flashrank = False
+
+    use_api = settings.use_api
     context_budget = _get_context_budget(eff_provider)
 
-    # Process documents
-    processor = DocumentProcessor()
-    documents = processor.process_path(input_path)
-    if isinstance(documents, dict):
-        documents = [documents]
+    # ── Resolve input path (defaults to CWD) ──────────────────────────
+    resolved_path = _resolve_input_path(input_path)
+    if not resolved_path.exists():
+        return f"Error: Path not found: {resolved_path}"
 
-    all_chunks: list[dict] = []
-    for doc in documents:
-        all_chunks.extend(doc.get("chunks", []))
-
-    # Persistence directory
-    p = Path(input_path)
-    store_dir = (p.parent if p.is_file() else p) / ".vrlmrag_store"
+    # ── Persistence directory ─────────────────────────────────────────
+    store_dir = _store_dir_for(resolved_path)
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    # Embeddings + reranker (loaded sequentially to limit peak RAM)
+    # ── Manifest-based change detection ───────────────────────────────
+    current_files = _scan_files(resolved_path)
+    manifest = _load_manifest(store_dir)
+    new_or_modified, deleted = _detect_changes(current_files, manifest)
+
+    embeddings_file = store_dir / "embeddings.json"
+    store_exists = embeddings_file.exists()
+    needs_processing = bool(new_or_modified) or not store_exists
+
+    logger.info(
+        "Store check: exists=%s, new/modified=%d, deleted=%d, needs_processing=%s",
+        store_exists, len(new_or_modified), len(deleted), needs_processing,
+    )
+
+    # ── Process only new/modified documents ───────────────────────────
+    all_chunks: list[dict] = []
+    documents: list[dict] = []
+
+    if needs_processing:
+        _transcriber = None
+        if not use_api:
+            try:
+                from vl_rag_graph_rlm.rag.parakeet import create_parakeet_transcriber
+                _transcriber = create_parakeet_transcriber(
+                    cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
+                )
+            except ImportError:
+                pass
+        processor = DocumentProcessor(
+            transcription_provider=_transcriber,
+            use_api=use_api,
+        )
+
+        if new_or_modified and store_exists:
+            # Incremental: only process changed files
+            for fpath in new_or_modified:
+                result = processor.process_path(fpath)
+                if isinstance(result, dict):
+                    documents.append(result)
+                elif isinstance(result, list):
+                    documents.extend(result)
+        else:
+            # Full processing (first run or no store)
+            result = processor.process_path(str(resolved_path))
+            if isinstance(result, dict):
+                documents = [result]
+            elif isinstance(result, list):
+                documents = result
+
+        for doc in documents:
+            all_chunks.extend(doc.get("chunks", []))
+
+    # ── Embeddings — API mode or local Qwen3-VL ──────────────────────
     store = None
     reranker_vl = None
-    if has_qwen3vl:
-        import torch
-        import gc
+    _lock_ctx = None
 
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        embedder = create_qwen3vl_embedder(device=device)
+    if use_api and has_api_embedding:
+        embedder = create_api_embedder()
         store = MultimodalVectorStore(
             embedding_provider=embedder,
-            storage_path=str(store_dir / "embeddings.json"),
+            storage_path=str(embeddings_file),
         )
-        for chunk in all_chunks:
-            content = chunk.get("content", "")
-            if content.strip() and not store.content_exists(content):
-                metadata = {"type": chunk.get("type", "text")}
-                if "slide" in chunk:
-                    metadata["slide"] = chunk["slide"]
-                store.add_text(content=content, metadata=metadata, instruction=_DOCUMENT_INSTRUCTION)
+    elif has_qwen3vl:
+        _emb_model = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+        _lock_ctx = local_model_lock(
+            _emb_model,
+            description="MCP query_document",
+        )
+        _lock_ctx.__enter__()
 
-        # Embed images
-        for doc in documents:
-            for img_info in doc.get("image_data", []):
-                try:
-                    temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
-                    with open(temp_path, "wb") as f:
-                        f.write(img_info["blob"])
-                    store.add_image(
-                        image_path=temp_path,
-                        description=f"Image from slide {img_info['slide']}",
-                        metadata={"type": "image", "slide": img_info["slide"]},
-                        instruction=_DOCUMENT_INSTRUCTION,
-                    )
-                except Exception:
-                    pass
+        import torch
 
-        # Free embedder before loading reranker to reduce peak RAM
-        # The store keeps embeddings in memory, but the model itself
-        # is no longer needed after all documents are embedded.
-        del embedder
-        store.embedding_provider = None
-        gc.collect()
-        if device == "mps":
-            torch.mps.empty_cache()
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        embedder = create_qwen3vl_embedder(
+            model_name=_emb_model,
+            device=device,
+        )
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=str(embeddings_file),
+        )
 
-        reranker_vl = create_qwen3vl_reranker(device=device)
+    try:
+        if store is not None and needs_processing:
+            for chunk in all_chunks:
+                content = chunk.get("content", "")
+                if content.strip() and not store.content_exists(content):
+                    metadata = {"type": chunk.get("type", "text")}
+                    if "slide" in chunk:
+                        metadata["slide"] = chunk["slide"]
+                    store.add_text(content=content, metadata=metadata, instruction=_DOCUMENT_INSTRUCTION)
 
-    # RLM
+            # Embed images
+            for doc in documents:
+                for img_info in doc.get("image_data", []):
+                    try:
+                        temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
+                        with open(temp_path, "wb") as f:
+                            f.write(img_info["blob"])
+                        store.add_image(
+                            image_path=temp_path,
+                            description=f"Image from slide {img_info['slide']}",
+                            metadata={"type": "image", "slide": img_info["slide"]},
+                            instruction=_DOCUMENT_INSTRUCTION,
+                        )
+                    except Exception:
+                        pass
+
+            # Embed video frames from media documents
+            for doc in documents:
+                for i, frame_path in enumerate(doc.get("frame_paths", [])):
+                    try:
+                        store.add_image(
+                            image_path=frame_path,
+                            description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                            metadata={"type": "video_frame", "frame_index": i, "source": doc["path"]},
+                            instruction=_DOCUMENT_INSTRUCTION,
+                        )
+                    except Exception:
+                        pass
+
+            # Update manifest after successful indexing
+            manifest["files"] = {str(k): v for k, v in current_files.items()}
+            _save_manifest(store_dir, manifest)
+
+        # Load lightweight FlashRank reranker (~34 MB — coexists with embedder)
+        if has_flashrank:
+            reranker_vl = create_flashrank_reranker(
+                model_name=os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2"),
+            )
+    finally:
+        if _lock_ctx is not None:
+            _lock_ctx.__exit__(None, None, None)
+
+    # ── RLM ───────────────────────────────────────────────────────────
     rlm = _build_rlm(eff_provider, eff_model, settings)
     fallback_hierarchy = get_available_providers() if (provider or settings.provider) == "auto" else None
 
-    # Knowledge graph
+    # ── Knowledge graph (load existing or build from new content) ─────
     kg_file = store_dir / "knowledge_graph.md"
     knowledge_graph = _load_knowledge_graph(kg_file)
-    if not knowledge_graph and all_chunks:
+    if needs_processing and all_chunks:
         kg_limit = min(context_budget, 25000)
         kg_context = "\n\n".join(d.get("content", "")[:2000] for d in documents)
         try:
             kg_result = rlm.completion(_KG_EXTRACTION_PROMPT, kg_context[:kg_limit])
-            knowledge_graph = kg_result.response
+            new_kg = kg_result.response
+            if knowledge_graph:
+                knowledge_graph = _merge_knowledge_graphs(knowledge_graph, new_kg)
+            else:
+                knowledge_graph = new_kg
             _save_knowledge_graph(kg_file, knowledge_graph)
         except Exception:
-            knowledge_graph = ""
+            if not knowledge_graph:
+                knowledge_graph = ""
 
-    # Run query
+    # ── Collect all chunks for fallback reranking ─────────────────────
+    # If we skipped processing (store reuse), we still need chunks for
+    # the fallback reranker path.  Reconstruct from the store.
+    if not all_chunks and store is not None:
+        all_chunks = [
+            {"content": doc.content, "type": doc.metadata.get("type", "text")}
+            for doc in store.documents.values()
+        ]
+
+    # ── Run query ─────────────────────────────────────────────────────
     rrf = ReciprocalRankFusion(k=60)
     fallback_reranker = CompositeReranker()
 
@@ -411,9 +604,11 @@ async def query_document(
     )
 
     # Format response
+    store_info = f"{len(store.documents)} embeddings" if store else "no store"
+    reused = "reused" if not needs_processing else "updated"
     parts = [result["response"]]
     if result.get("time"):
-        parts.append(f"\n---\n*Completed in {result['time']:.2f}s via {eff_provider}*")
+        parts.append(f"\n---\n*Completed in {result['time']:.2f}s via {eff_provider} ({store_info}, store {reused})*")
     if result.get("sources"):
         parts.append(f"*{len(result['sources'])} sources retrieved*")
     return "\n".join(parts)
@@ -494,6 +689,300 @@ async def analyze_document(
         parts.append(f"*Report saved to: {output_path}*")
 
     return "\n".join(parts)
+
+
+@mcp.tool()
+async def query_text_document(
+    ctx: Context,
+    input_path: str,
+    query: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    max_depth: Optional[int] = None,
+    max_iterations: Optional[int] = None,
+) -> str:
+    """Query a document using text-only RAG (no multimodal models).
+
+    Lightweight alternative to query_document that uses the text-only
+    Qwen3-Embedding model (~1.2 GB) instead of Qwen3-VL (~4.6 GB).
+    Skips image/video embedding — ideal for plain text, markdown, and
+    text-heavy PDFs where multimodal features are not needed.
+
+    Uses local embedding (zero API calls) with FlashRank reranking,
+    hybrid retrieval, knowledge-graph extraction, and recursive LLM
+    reasoning — the same 6-pillar pipeline, just without vision.
+
+    **Persistent vector store:** Reuses existing `.vrlmrag_store/`
+    embeddings automatically.  Only new or modified files are re-processed.
+
+    Args:
+        input_path: Path to a file (.txt, .md, .pdf) or folder.
+                    Use "." or leave empty to query the current working directory.
+        query: The question to answer about the document(s).
+        provider: Override LLM provider (default: auto/hierarchy).
+        model: Override LLM model name.
+        max_depth: Override max RLM recursion depth.
+        max_iterations: Override max RLM iterations per call.
+
+    Returns:
+        The LLM's answer with source attribution.
+    """
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+    depth = max_depth or settings.max_depth
+    iterations = max_iterations or settings.max_iterations
+
+    # Import heavy modules lazily
+    from vrlmrag import DocumentProcessor, _run_vl_rag_query, _load_knowledge_graph, _save_knowledge_graph, _merge_knowledge_graphs
+
+    from vl_rag_graph_rlm.rag import CompositeReranker, ReciprocalRankFusion
+
+    try:
+        from vl_rag_graph_rlm.rag.text_embedding import create_text_embedder
+        from vl_rag_graph_rlm.rag.multimodal_store import MultimodalVectorStore
+
+        has_text_embedding = True
+    except ImportError:
+        has_text_embedding = False
+
+    try:
+        from vl_rag_graph_rlm.rag.flashrank_reranker import create_flashrank_reranker
+        has_flashrank = True
+    except ImportError:
+        has_flashrank = False
+
+    if not has_text_embedding:
+        return "Error: text-only embedding not available. Install transformers."
+
+    context_budget = _get_context_budget(eff_provider)
+
+    # ── Resolve input path (defaults to CWD) ──────────────────────────
+    resolved_path = _resolve_input_path(input_path)
+    if not resolved_path.exists():
+        return f"Error: Path not found: {resolved_path}"
+
+    # ── Persistence directory ─────────────────────────────────────────
+    store_dir = _store_dir_for(resolved_path)
+    store_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Manifest-based change detection ───────────────────────────────
+    current_files = _scan_files(resolved_path)
+    manifest = _load_manifest(store_dir)
+    new_or_modified, deleted = _detect_changes(current_files, manifest)
+
+    embeddings_file = store_dir / "embeddings_text.json"
+    store_exists = embeddings_file.exists()
+    needs_processing = bool(new_or_modified) or not store_exists
+
+    logger.info(
+        "Text store check: exists=%s, new/modified=%d, deleted=%d, needs_processing=%s",
+        store_exists, len(new_or_modified), len(deleted), needs_processing,
+    )
+
+    # ── Process only new/modified documents ───────────────────────────
+    all_chunks: list[dict] = []
+    documents: list[dict] = []
+
+    if needs_processing:
+        processor = DocumentProcessor()
+
+        if new_or_modified and store_exists:
+            for fpath in new_or_modified:
+                result = processor.process_path(fpath)
+                if isinstance(result, dict):
+                    documents.append(result)
+                elif isinstance(result, list):
+                    documents.extend(result)
+        else:
+            result = processor.process_path(str(resolved_path))
+            if isinstance(result, dict):
+                documents = [result]
+            elif isinstance(result, list):
+                documents = result
+
+        for doc in documents:
+            all_chunks.extend(doc.get("chunks", []))
+
+    if not all_chunks and not store_exists:
+        return f"No text content found in: {resolved_path}"
+
+    # ── Text-only embedding — acquire cross-process lock ──────────────
+    text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+    reranker_vl = None
+
+    with local_model_lock(text_model, description="MCP query_text_document"):
+        embedder = create_text_embedder(model_name=text_model)
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=str(embeddings_file),
+        )
+
+        if needs_processing:
+            for chunk in all_chunks:
+                content = chunk.get("content", "")
+                if content.strip() and not store.content_exists(content):
+                    metadata = {"type": chunk.get("type", "text")}
+                    store.add_text(
+                        content,
+                        metadata=metadata,
+                        instruction=_DOCUMENT_INSTRUCTION,
+                    )
+
+            # Update manifest after successful indexing
+            manifest["files"] = {str(k): v for k, v in current_files.items()}
+            _save_manifest(store_dir, manifest)
+
+        # FlashRank reranker (~34 MB — coexists with embedder)
+        if has_flashrank:
+            reranker_vl = create_flashrank_reranker(
+                model_name=os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2"),
+            )
+    # Lock released — RLM calls below are API-based
+
+    # ── Reconstruct chunks from store if we skipped processing ────────
+    if not all_chunks and store is not None:
+        all_chunks = [
+            {"content": doc.content, "type": doc.metadata.get("type", "text")}
+            for doc in store.documents.values()
+        ]
+
+    # ── RLM ───────────────────────────────────────────────────────────
+    rlm = _build_rlm(eff_provider, eff_model, settings)
+    fallback_hierarchy = get_available_providers() if (provider or settings.provider) == "auto" else None
+
+    # ── Knowledge graph ───────────────────────────────────────────────
+    kg_file = store_dir / "knowledge_graph.md"
+    knowledge_graph = _load_knowledge_graph(kg_file)
+    if needs_processing and all_chunks and not knowledge_graph:
+        kg_limit = min(context_budget, 25000)
+        kg_text = "\n\n".join(c.get("content", "") for c in all_chunks)[:kg_limit]
+        try:
+            kg_result = rlm.completion(_KG_EXTRACTION_PROMPT, kg_text[:kg_limit])
+            knowledge_graph = kg_result.response
+            _save_knowledge_graph(kg_file, knowledge_graph)
+        except Exception:
+            knowledge_graph = ""
+
+    # ── Run query ─────────────────────────────────────────────────────
+    rrf = ReciprocalRankFusion(k=60)
+    fallback_reranker = CompositeReranker()
+
+    result = _run_vl_rag_query(
+        query,
+        store=store,
+        reranker_vl=reranker_vl,
+        rrf=rrf,
+        fallback_reranker=fallback_reranker,
+        all_chunks=all_chunks,
+        knowledge_graph=knowledge_graph,
+        context_budget=context_budget,
+        rlm=rlm,
+        fallback_hierarchy=fallback_hierarchy,
+        provider=eff_provider,
+        resolved_model=eff_model,
+        max_depth=depth,
+        max_iterations=iterations,
+        verbose=False,
+    )
+
+    store_info = f"{len(store.documents)} embeddings" if store else "no store"
+    reused = "reused" if not needs_processing else "updated"
+    parts = [result["response"]]
+    if result.get("time"):
+        parts.append(f"\n---\n*Completed in {result['time']:.2f}s via {eff_provider} ({store_info}, store {reused})*")
+    if result.get("sources"):
+        parts.append(f"*{len(result['sources'])} sources retrieved*")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+async def run_text_only_cli(
+    ctx: Context,
+    input_path: str,
+    query: Optional[str] = None,
+    output_path: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    max_depth: Optional[int] = None,
+    max_iterations: Optional[int] = None,
+) -> str:
+    """Run the vrlmrag CLI in text-only mode via subprocess.
+
+    This executes the exact same CLI command you would run locally:
+        vrlmrag --text-only <input_path> -q "<query>"
+
+    Captures stdout/stderr and returns the full CLI output.  Useful when
+    you want the authentic CLI experience (progress bars, timing info,
+    etc.) rather than the internal API.
+
+    Uses lightweight text-only embeddings (~1.2 GB RAM, fully offline).
+    Skips image/video processing — best for .txt, .md, text-heavy PDFs.
+
+    Args:
+        input_path: Path to file or folder to analyze.
+        query: Optional query string (default: auto-generated summary).
+        output_path: Optional path to save markdown report.
+        provider: LLM provider (default: auto/hierarchy).
+        model: Override LLM model name.
+        max_depth: Max RLM recursion depth (default: 3).
+        max_iterations: Max RLM iterations (default: 10).
+
+    Returns:
+        Full CLI stdout/stderr output as a string.
+    """
+    import asyncio
+    import shlex
+    from pathlib import Path
+
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+
+    # Resolve the vrlmrag CLI entry point
+    codebase_root = Path(__file__).parent.parent.parent.parent.parent.resolve()
+    vrlmrag_py = codebase_root / "src" / "vrlmrag.py"
+
+    if not vrlmrag_py.exists():
+        return f"Error: vrlmrag.py not found at expected path: {vrlmrag_py}"
+
+    # Build command line
+    cmd_parts = [
+        sys.executable,
+        str(vrlmrag_py),
+        "--text-only",
+        shlex.quote(input_path),
+        "--provider", shlex.quote(eff_provider),
+    ]
+
+    if query:
+        cmd_parts.extend(["--query", shlex.quote(query)])
+    if output_path:
+        cmd_parts.extend(["--output", shlex.quote(output_path)])
+    if eff_model:
+        cmd_parts.extend(["--model", shlex.quote(eff_model)])
+    if max_depth is not None:
+        cmd_parts.extend(["--max-depth", str(max_depth)])
+    if max_iterations is not None:
+        cmd_parts.extend(["--max-iterations", str(max_iterations)])
+
+    cmd_str = " ".join(cmd_parts)
+    logger.info("Running CLI: %s", cmd_str)
+
+    # Run subprocess and capture output
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd_str,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(codebase_root),
+        )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            return f"CLI exited with code {proc.returncode}:\n{output}"
+        return output
+    except Exception as exc:
+        return f"Error running CLI: {exc}"
 
 
 async def collection_add(
@@ -707,6 +1196,42 @@ if _SETTINGS.collections_enabled:
     logger.info("Collection tools registered (5 tools)")
 else:
     logger.info("Collection tools disabled — set VRLMRAG_COLLECTIONS=true to enable")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Diagnostic tools
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+async def local_model_lock_status(ctx: Context) -> str:
+    """Check the status of the cross-process local model lock.
+
+    Shows whether a local model is currently loaded in RAM, which
+    process holds the lock, and whether that process is still alive.
+    Useful for diagnosing why a query might be waiting.
+
+    Returns:
+        Lock status including holder PID, model, and process info.
+    """
+    status = lock_status()
+    if not status["locked"]:
+        return (
+            "Local model lock: **FREE**\n"
+            "No local model is currently loaded in RAM.\n"
+            f"This process holds lock: {status['this_process_holds']}"
+        )
+
+    return (
+        f"Local model lock: **HELD**\n"
+        f"- **Holder PID:** {status['holder_pid']}\n"
+        f"- **Holder alive:** {status['holder_alive']}\n"
+        f"- **Model:** {status['model_id']}\n"
+        f"- **Since:** {status['acquired_at']}\n"
+        f"- **Process:** {status['process_name']}\n"
+        f"- **Description:** {status['description']}\n"
+        f"- **This process holds:** {status['this_process_holds']}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

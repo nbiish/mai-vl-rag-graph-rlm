@@ -1,31 +1,36 @@
 # VL-RAG-Graph-RLM Documentation
 
-Version: 0.1.1 (Feb 8, 2026)
+Version: 0.1.2 (Feb 11, 2026)
 
 ## Overview
 
 This folder contains comprehensive documentation for the **VL-RAG-Graph-RLM** (Vision-Language RAG Graph Recursive Language Model) framework — a unified multimodal document analysis system with **named persistent knowledge collections**, **accuracy-first retrieval**, and **17 LLM provider templates** with automatic fallback.
 
-The system processes documents (PPTX, PDF, TXT, MD) with images through a full 6-pillar pipeline: Qwen3-VL vision-language embeddings → hybrid RAG with RRF fusion → cross-attention reranking → knowledge graph extraction → recursive LLM reasoning → markdown report generation.
+The system processes documents (PPTX, PDF, TXT, MD, Video, Audio) through a full 6-pillar pipeline: Qwen3-VL vision-language embeddings → hybrid RAG with RRF fusion → cross-attention reranking → knowledge graph extraction → recursive LLM reasoning → markdown report generation. All model loading uses **sequential load-use-free** memory management (peak ~6.7 GB on a 40-min video).
 
-## What's New (v0.1.1 — Feb 8, 2026)
+## What's New (v0.1.2 — Feb 11, 2026)
 
-### Named Persistent Collections
-Build named, location-independent knowledge stores that persist inside the codebase. Add documents from any path, query from anywhere, blend multiple collections, and script everything via CLI — no interaction required.
+### Audio Transcription & Video Processing
+- **Audio support** via NVIDIA Parakeet V3 — `add_audio()` transcribes and embeds transcript text
+- **RAM-safe video** via ffmpeg frame extraction — never loads full video into memory
+- **Lazy model loading** — `MultimodalRAGPipeline.__init__` uses ~207 MB; models load on first use
+- **Sequential load-use-free** — embedder freed before reranker loads (peak 6.7 GB vs 20 GB+)
+
+```python
+pipeline = create_pipeline(llm_provider="sambanova")  # instant, ~207 MB
+pipeline.add_video("talk.mp4", fps=0.1, max_frames=8) # ffmpeg frames, not torchvision
+pipeline.add_audio("recording.wav", transcribe=True)  # Parakeet V3 transcription
+result = pipeline.query("What was discussed?")         # reranker loads only now
+```
+
+### Named Persistent Collections (v0.1.1)
+Build named, location-independent knowledge stores that persist inside the codebase.
 
 ```bash
 vrlmrag -c research --add ./papers/          # add docs to a collection
 vrlmrag -c research -q "Key findings?"       # query a collection
 vrlmrag -c research -c code -q "How?"        # blend multiple collections
-vrlmrag -c research -i                       # interactive w/ collection
-vrlmrag --collection-list                    # list all collections
 ```
-
-### Accuracy-First Query Pipeline
-All queries route through a single shared function (`_run_vl_rag_query()`) with widened retrieval parameters: `top_k=50` dense/keyword, `30` reranker candidates, `10` final results. Embedding instruction pairing (`_DOCUMENT_INSTRUCTION` / `_QUERY_INSTRUCTION`) and structured KG extraction with typed entities and explicit relationships.
-
-### Universal Persistent Embeddings
-Content-based SHA-256 deduplication across all modes. Re-running on the same folder only embeds new/changed files. Knowledge graph merges across runs and is prepended to every query. Provider-agnostic — same store works with any LLM provider.
 
 ## Documentation Files
 
@@ -37,7 +42,7 @@ Content-based SHA-256 deduplication across all modes. Re-running on the same fol
 | **[RULES.md](RULES.md)** | Coding standards — always/never patterns, collection rules, device detection, provider-specific rules |
 | **[TODO.md](TODO.md)** | Roadmap — v0.2.0 plans, collection enhancements, completed items |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributor guide — adding providers, extending collections, testing |
-| **[CHANGELOG.md](CHANGELOG.md)** | Version history — v0.1.0 initial release, v0.1.1 collections + accuracy pipeline |
+| **[CHANGELOG.md](CHANGELOG.md)** | Version history — v0.1.0 initial, v0.1.1 collections, v0.1.2 audio/video/memory |
 | **[SECURITY.md](../SECURITY.md)** | Local security orchestration — secret scanning, sanitization, OWASP compliance |
 
 ## Quick Navigation
@@ -66,7 +71,7 @@ Every template, query, and collection operation exercises all six pillars:
 
 | # | Pillar | Component | Cost |
 |---|--------|-----------|------|
-| 1 | **VL** | Qwen3-VL-Embedding-2B — unified text + image embeddings | FREE (local) |
+| 1 | **VL** | Qwen3-VL-Embedding-2B — unified text + image + video + audio embeddings | FREE (local) |
 | 2 | **RAG** | Hybrid search (dense cosine + keyword) with RRF fusion | FREE (local) |
 | 3 | **Reranker** | Qwen3-VL-Reranker-2B — cross-attention relevance scoring | FREE (local) |
 | 4 | **Graph** | Knowledge graph extraction via RLM (typed entities + relationships) | LLM cost |
@@ -116,7 +121,7 @@ See **[TODO.md](TODO.md)** for the full roadmap. Key upcoming features:
 
 ## Version
 
-Current release: **v0.1.1** (2026-02-08)
+Current release: **v0.1.2** (2026-02-11)
 
 See **[CHANGELOG.md](CHANGELOG.md)** for full release notes.
 

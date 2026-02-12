@@ -93,6 +93,7 @@ class MCPSettings:
     max_depth: int = 3
     max_iterations: int = 10
     temperature: float = 0.0
+    use_api: bool = True
     collections_enabled: bool = True
     collections_root: Optional[str] = None
     log_level: str = "INFO"
@@ -153,6 +154,7 @@ def _apply_env_overrides(settings: MCPSettings) -> MCPSettings:
         "VRLMRAG_MAX_DEPTH": "max_depth",
         "VRLMRAG_MAX_ITERATIONS": "max_iterations",
         "VRLMRAG_TEMPERATURE": "temperature",
+        "VRLMRAG_USE_API": "use_api",
         "VRLMRAG_COLLECTIONS": "collections_enabled",
         "VRLMRAG_COLLECTIONS_ROOT": "collections_root",
         "VRLMRAG_LOG_LEVEL": "log_level",
@@ -164,7 +166,7 @@ def _apply_env_overrides(settings: MCPSettings) -> MCPSettings:
         if value is None:
             continue
 
-        if field_name == "collections_enabled":
+        if field_name in ("collections_enabled", "use_api"):
             setattr(settings, field_name, _parse_bool(value))
         elif field_name in ("max_depth", "max_iterations"):
             try:
@@ -211,6 +213,7 @@ def load_settings() -> MCPSettings:
                     max_depth=raw.get("max_depth", 3),
                     max_iterations=raw.get("max_iterations", 10),
                     temperature=raw.get("temperature", 0.0),
+                    use_api=raw.get("use_api", True),
                     collections_enabled=raw.get("collections_enabled", True),
                     collections_root=raw.get("collections_root"),
                     log_level=raw.get("log_level", "INFO"),

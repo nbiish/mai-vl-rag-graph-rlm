@@ -7,6 +7,114 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-02-11
+
+### Text-Only Embedding Mode (Lightweight Local RAG)
+- **Three mutually exclusive embedding modes:**
+  1. **TEXT_ONLY** — `VRLMRAG_TEXT_ONLY=true` / `--text-only` — ~1.2 GB RAM, fully offline, text only
+  2. **API** — `VRLMRAG_USE_API=true` / `--use-api` — ~200 MB RAM, requires internet (OpenRouter + ZenMux)
+  3. **MULTIMODAL** (default) — both flags false — ~4.6 GB RAM, fully offline, handles images/videos/PowerPoints
+- **`TextOnlyEmbeddingProvider`** — New text-only embedding provider using Qwen3-Embedding-0.6B (~1.2 GB)
+  - `rag/text_embedding.py` — Implements same `embed_text()` interface as Qwen3VLEmbeddingProvider
+  - Uses Qwen3-Embedding pattern: `Instruct: {instruction}\nQuery: {text}`
+  - Last-token pooling with L2 normalization (Qwen3-Embedding best practice)
+  - Supports MPS/CUDA/CPU auto-detection
+- **`--text-only` CLI flag** — Run CLI in text-only mode (env: `VRLMRAG_TEXT_ONLY=true`)
+- **`VRLMRAG_TEXT_ONLY_MODEL`** env var — Configure text-only model (default: `Qwen/Qwen3-Embedding-0.6B`)
+  - Options: 0.6B (~1.2 GB), 4B (~6 GB), 8B (~8 GB) — 8B has best MTEB score (70.58)
+- **All 4 CLI code paths support text-only:** `run_analysis`, `run_interactive_session`, `run_collection_add`, `run_collection_query`
+- **Separate persistence:** Text-only stores use `embeddings_text.json` suffix to avoid collision with multimodal stores
+
+### New MCP Tools
+- **`query_text_document`** — Text-only RAG pipeline (internal API)
+  - Uses TextOnlyEmbeddingProvider + FlashRank reranker
+  - Same 6-pillar pipeline: dense search → keyword → RRF → rerank → KG → RLM
+  - Skips image/video processing (text content only)
+- **`run_text_only_cli`** — Execute CLI command via subprocess
+  - Runs actual `vrlmrag --text-only` command and captures output
+  - Provides authentic CLI experience (progress bars, timing info) via MCP
+
+### Model Configuration Updates
+- **`.env` restructured** with three-mode toggle documentation
+- **Model Configuration section** — All model names externalized to env vars:
+  - `VRLMRAG_TEXT_ONLY_MODEL` — Text-only embedding (Qwen3-Embedding-0.6B)
+  - `VRLMRAG_LOCAL_EMBEDDING_MODEL` — Multimodal embedding (Qwen3-VL-Embedding-2B)
+  - `VRLMRAG_RERANKER_MODEL` — FlashRank reranker (ms-marco-MiniLM-L-12-v2)
+  - `VRLMRAG_EMBEDDING_MODEL` — API embedding (openai/text-embedding-3-small)
+  - `VRLMRAG_VLM_MODEL` — API VLM (inclusionai/ming-flash-omni-preview)
+
+### Files Changed
+- `src/vl_rag_graph_rlm/rag/text_embedding.py` — New text-only embedding provider
+- `src/vl_rag_graph_rlm/rag/__init__.py` — TextOnlyEmbeddingProvider exports
+- `src/vrlmrag.py` — `--text-only` flag, text-only wired through all 4 functions
+- `src/vl_rag_graph_rlm/mcp_server/server.py` — `query_text_document` + `run_text_only_cli` tools
+- `.env` — Three-mode toggle, text-only model config
+- `.env.example` — Matching template updates
+
+## [0.1.3] - 2026-02-11
+
+### FlashRank Lightweight Reranker (RAM Fix)
+- **Replaced Qwen3-VL-Reranker-2B (~4.6 GB) with FlashRank ONNX cross-encoder (~34 MB)**
+- **`rag/flashrank_reranker.py`** — `FlashRankRerankerProvider` adapter matching existing `rerank()` interface
+- **Zero model swapping** — Embedder + reranker coexist in RAM (~4.6 GB + ~34 MB = ~4.63 GB peak)
+- **Removed all sequential load-free-load logic** — No more `del model; gc.collect(); torch.mps.empty_cache()` cycles
+- **Root cause fix** — Python + PyTorch on macOS does not reliably free model memory after `del`; sequential loading was accumulating RSS
+- **8 new FlashRank tests** — `tests/test_flashrank_reranker.py` covers ranking quality, interface compat, edge cases
+- **Optional dependency** — `pip install "vl-rag-graph-rlm[reranker]"` for `flashrank>=0.2.0`
+
+### API-Based Embedding Mode (Fully Implemented)
+- **`--use-api` CLI flag** — Switch to API-based embeddings (env: `VRLMRAG_USE_API=true`)
+- **OpenRouter text embeddings** — `openai/text-embedding-3-large` (3072 dims) via OpenRouter API
+- **ZenMux omni VLM** — `inclusionai/ming-flash-omni-preview` for image/video → text descriptions
+- **`rag/api_embedding.py`** — `APIEmbeddingProvider` drop-in replacement for `Qwen3VLEmbeddingProvider`
+- **Zero local GPU models** — Peak RAM ~200 MB when API mode is enabled (vs ~4.6 GB local)
+- **Dual API keys** — `OPENROUTER_API_KEY` for embeddings, `ZENMUX_API_KEY` for VLM descriptions
+- **Override env vars** — `VRLMRAG_EMBEDDING_MODEL`, `VRLMRAG_VLM_MODEL`, `VRLMRAG_EMBEDDING_BASE_URL`, etc.
+- **MCP settings** — `use_api` field in `mcp_settings.json` + `VRLMRAG_USE_API` env var
+- **Pipeline support** — `MultimodalRAGPipeline(use_api=True)` for Python API usage
+- **All 4 CLI code paths** — run_analysis, interactive, collection_add, collection_query support `--use-api`
+
+### Files Changed
+- `src/vl_rag_graph_rlm/rag/flashrank_reranker.py` — New FlashRank adapter module
+- `src/vl_rag_graph_rlm/rag/api_embedding.py` — New API embedding provider (OpenRouter + ZenMux)
+- `src/vrlmrag.py` — All 4 code paths use FlashRank + `use_api` flag wired through
+- `src/vl_rag_graph_rlm/pipeline.py` — FlashRank reranker, `use_api` in embedding_provider lazy load
+- `src/vl_rag_graph_rlm/mcp_server/server.py` — FlashRank + API embedding support
+- `src/vl_rag_graph_rlm/mcp_server/settings.py` — `use_api` field + `VRLMRAG_USE_API` env var
+- `src/vl_rag_graph_rlm/rag/__init__.py` — FlashRank + API embedding exports
+- `pyproject.toml` — `[reranker]` optional dependency group
+- `.env.example` — Full ZenMux omni + OpenRouter embedding documentation
+- `tests/test_flashrank_reranker.py` — 8 new tests
+
+## [0.1.2] - 2026-02-11
+
+### Audio Transcription Support
+- **`rag/parakeet.py`** — `ParakeetTranscriptionProvider` for NVIDIA Parakeet V3 audio transcription via NeMo
+- **Lazy-loaded model** — Parakeet model loads only on first `transcribe()` call, zero RAM at init
+- **Dual caching** — In-memory + optional disk cache by SHA-256 file hash
+- **`add_audio()` on `MultimodalVectorStore`** — Transcribe audio → embed transcript text with Qwen3-VL
+- **`add_audio()` on `MultimodalRAGPipeline`** — Pipeline-level audio support with transcription provider
+- **`get_audio_transcription()`** — Retrieve cached transcriptions by document ID
+- **Graceful fallback** — Placeholder content if transcription fails or provider not configured
+- **Optional dependency** — `pip install "vl-rag-graph-rlm[parakeet]"` for `nemo_toolkit[asr]>=2.0.0`
+
+### Memory-Safe Model Loading
+- **Pipeline lazy `@property` loading** — `MultimodalRAGPipeline.__init__` stores config only (207 MB); models load on first access
+- **Deferred reranker attachment** — `_ensure_reranker_on_store()` attaches reranker only when reranking is triggered
+- **Note:** v0.1.3 replaced the sequential load-free-load pattern with FlashRank coexistence (see above)
+
+### RAM-Safe Video Processing
+- **ffmpeg frame extraction** — `_extract_frames_ffmpeg()` replaces torchvision video reader
+- **Never loads full video into RAM** — ffmpeg seeks and extracts only needed frames as JPEG
+- **Frame list embedding** — Extracted frames passed as `List[str]` to `embed_video()` / `embed_multimodal()`
+- **Automatic cleanup** — Temp frame directory removed after embedding via `shutil.rmtree()`
+- **Configurable** — `fps` and `max_frames` control extraction density
+
+### Tests
+- **`tests/test_audio_integration.py`** — 10 tests covering audio transcription, deduplication, fallback, search
+- **RAM profile test** — Verified sequential loading on 40-min 480p YouTube video (peak 6,746 MB)
+- **All 32 existing tests pass** — Zero regressions
+
 ## [0.1.1] - 2026-02-08
 
 ### Named Persistent Collections
@@ -190,6 +298,7 @@ All 17 provider templates implement the full 6-pillar architecture:
 
 ---
 
-[Unreleased]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nbiish/mai-vl-rag-graph-rlm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nbiish/mai-vl-rag-graph-rlm/releases/tag/v0.1.0

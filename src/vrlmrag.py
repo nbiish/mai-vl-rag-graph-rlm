@@ -35,6 +35,7 @@ Provider Hierarchy:
 
 __version__ = "0.1.1"
 
+import json
 import os
 import sys
 import argparse
@@ -76,9 +77,7 @@ from vl_rag_graph_rlm.rag import (
 try:
     from vl_rag_graph_rlm.rag.qwen3vl import (
         Qwen3VLEmbeddingProvider,
-        Qwen3VLRerankerProvider,
         create_qwen3vl_embedder,
-        create_qwen3vl_reranker,
         MultimodalDocument,
     )
     from vl_rag_graph_rlm.rag.multimodal_store import MultimodalVectorStore
@@ -86,6 +85,36 @@ try:
     HAS_QWEN3VL = True
 except ImportError:
     HAS_QWEN3VL = False
+
+# FlashRank lightweight reranker (~34 MB, ONNX cross-encoder)
+try:
+    from vl_rag_graph_rlm.rag.flashrank_reranker import (
+        create_flashrank_reranker,
+    )
+    HAS_FLASHRANK = True
+except ImportError:
+    HAS_FLASHRANK = False
+
+# API-based embedding provider (OpenRouter + ZenMux omni)
+try:
+    from vl_rag_graph_rlm.rag.api_embedding import create_api_embedder
+    HAS_API_EMBEDDING = True
+except ImportError:
+    HAS_API_EMBEDDING = False
+
+# Text-only embedding provider (Qwen3-Embedding, ~1.2 GB)
+try:
+    from vl_rag_graph_rlm.rag.text_embedding import create_text_embedder
+    HAS_TEXT_EMBEDDING = True
+except ImportError:
+    HAS_TEXT_EMBEDDING = False
+
+# Parakeet ASR transcription (local audio → text, ~0.6 GB)
+try:
+    from vl_rag_graph_rlm.rag.parakeet import create_parakeet_transcriber
+    HAS_PARAKEET = True
+except ImportError:
+    HAS_PARAKEET = False
 
 from vl_rag_graph_rlm.collections import (
     collection_exists,
@@ -103,6 +132,11 @@ from vl_rag_graph_rlm.collections import (
     _collection_dir,
     COLLECTIONS_ROOT,
 )
+from vl_rag_graph_rlm.local_model_lock import (
+    local_model_lock,
+    lock_status,
+    is_local_provider,
+)
 
 # Optional PPTX support
 try:
@@ -114,11 +148,78 @@ except ImportError:
     HAS_PPTX = False
 
 
+# Audio/video extensions handled by the media pipeline
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus"}
+_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov"}
+_MEDIA_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
+
+# All supported file extensions for manifest scanning
+_ALL_SUPPORTED_EXTENSIONS = (
+    {".txt", ".md", ".pdf", ".pptx", ".docx"}
+    | _MEDIA_EXTENSIONS
+    | {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}
+)
+
+
+def _load_manifest(store_dir: Path) -> dict:
+    """Load the file manifest (tracks indexed files + mtimes)."""
+    manifest_file = store_dir / "manifest.json"
+    if manifest_file.exists():
+        try:
+            return json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_manifest(store_dir: Path, manifest: dict) -> None:
+    """Persist the file manifest."""
+    store_dir.mkdir(parents=True, exist_ok=True)
+    (store_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8",
+    )
+
+
+def _scan_supported_files(input_path: Path) -> dict[str, float]:
+    """Scan input_path for supported files, returning {path: mtime}."""
+    files: dict[str, float] = {}
+    if input_path.is_file():
+        if input_path.suffix.lower() in _ALL_SUPPORTED_EXTENSIONS:
+            files[str(input_path)] = input_path.stat().st_mtime
+    elif input_path.is_dir():
+        for f in sorted(input_path.rglob("*")):
+            if f.is_file() and f.suffix.lower() in _ALL_SUPPORTED_EXTENSIONS:
+                parts = f.relative_to(input_path).parts
+                if any(p.startswith(".") for p in parts):
+                    continue
+                files[str(f)] = f.stat().st_mtime
+    return files
+
+
+def _detect_file_changes(
+    current_files: dict[str, float], manifest: dict,
+) -> tuple[list[str], list[str]]:
+    """Compare current files against manifest.
+
+    Returns:
+        (new_or_modified, deleted) — lists of file paths
+    """
+    indexed = manifest.get("files", {})
+    new_or_modified = [
+        fpath for fpath, mtime in current_files.items()
+        if indexed.get(fpath) is None or mtime > indexed[fpath]
+    ]
+    deleted = [f for f in indexed if f not in current_files]
+    return new_or_modified, deleted
+
+
 class DocumentProcessor:
     """Process various document types for VL-RAG-Graph-RLM."""
 
-    def __init__(self):
-        self.supported_extensions = {".txt", ".md", ".pdf", ".pptx", ".docx"}
+    def __init__(self, transcription_provider=None, use_api: bool = False):
+        self.supported_extensions = {".txt", ".md", ".pdf", ".pptx", ".docx"} | _MEDIA_EXTENSIONS
+        self.transcription_provider = transcription_provider
+        self.use_api = use_api
 
     def process_path(self, path: str) -> List[dict]:
         """Process a file or folder path."""
@@ -139,6 +240,8 @@ class DocumentProcessor:
             return self._process_pptx(file_path)
         elif ext in {".txt", ".md"}:
             return self._process_text(file_path)
+        elif ext in _MEDIA_EXTENSIONS:
+            return self._process_media(file_path)
         else:
             return {
                 "type": "unsupported",
@@ -255,6 +358,178 @@ class DocumentProcessor:
             ],
         }
 
+    # ── Media processing (audio / video) ──────────────────────────
+
+    @staticmethod
+    def _extract_audio_ffmpeg(media_path: str, output_path: str) -> bool:
+        """Extract audio track from a media file using ffmpeg.
+
+        Args:
+            media_path: Path to video/audio file.
+            output_path: Path for the extracted .wav file.
+
+        Returns:
+            True if extraction succeeded, False otherwise.
+        """
+        import subprocess
+
+        cmd = [
+            "ffmpeg", "-i", media_path,
+            "-vn",                    # drop video
+            "-acodec", "pcm_s16le",   # 16-bit PCM (Parakeet-compatible)
+            "-ar", "16000",           # 16 kHz sample rate
+            "-ac", "1",               # mono
+            "-y",                     # overwrite
+            "-loglevel", "error",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            print(f"  Warning: ffmpeg audio extraction failed: {exc}")
+            return False
+
+    @staticmethod
+    def _extract_frames_ffmpeg(
+        video_path: str, fps: float = 0.5, max_frames: int = 32
+    ) -> List[str]:
+        """Extract key frames from a video using ffmpeg.
+
+        Returns:
+            List of temporary frame image paths.
+        """
+        import subprocess
+        import tempfile
+
+        tmp_dir = tempfile.mkdtemp(prefix="vrlmrag_frames_")
+        out_pattern = os.path.join(tmp_dir, "frame_%04d.jpg")
+
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vf", f"fps={fps}",
+            "-frames:v", str(max_frames),
+            "-q:v", "2",
+            "-loglevel", "error",
+            out_pattern,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return []
+
+        frames = sorted(
+            os.path.join(tmp_dir, f)
+            for f in os.listdir(tmp_dir)
+            if f.endswith(".jpg")
+        )
+        return frames
+
+    def _process_media(self, file_path: Path) -> dict:
+        """Process an audio or video file.
+
+        Local mode (use_api=False):
+            - Extracts audio track (ffmpeg) → transcribes with Parakeet
+            - Extracts key frames for Qwen3-VL visual embedding
+
+        API mode (use_api=True):
+            - Extracts key frames → ZenMux omni model describes them
+            - Extracts audio → ZenMux omni model transcribes/summarises
+            - Falls back to frame descriptions if audio API unavailable
+
+        Returns a document dict with text chunks (transcript) and
+        frame_paths / audio_path metadata for the embedding stage.
+        
+        SAFETY: This function wraps all operations in try-except to ensure
+        media processing never crashes the entire system.
+        """
+        import tempfile
+
+        ext = file_path.suffix.lower()
+        is_video = ext in _VIDEO_EXTENSIONS
+        media_type = "video" if is_video else "audio"
+
+        result: Dict[str, Any] = {
+            "type": media_type,
+            "path": str(file_path),
+            "content": "",
+            "chunks": [],
+            "frame_paths": [],
+            "audio_path": None,
+        }
+
+        try:
+            # --- Extract audio track ---
+            audio_path: Optional[str] = None
+            if is_video:
+                audio_path = tempfile.mktemp(suffix=".wav", prefix="vrlmrag_audio_")
+                ok = self._extract_audio_ffmpeg(str(file_path), audio_path)
+                if not ok or not Path(audio_path).exists() or Path(audio_path).stat().st_size < 100:
+                    audio_path = None
+            else:
+                # Already an audio file
+                audio_path = str(file_path)
+
+            result["audio_path"] = audio_path
+
+            # --- Transcribe audio (local Parakeet) ---
+            transcript = ""
+            if audio_path and self.transcription_provider is not None:
+                try:
+                    print(f"  [media] Transcribing audio with Parakeet...")
+                    transcript = self.transcription_provider.transcribe(audio_path)
+                    if isinstance(transcript, dict):
+                        transcript = transcript.get("text", "")
+                    print(f"  [media] Transcript: {len(transcript)} chars")
+                except Exception as exc:
+                    print(f"  Warning: Parakeet transcription failed: {exc}")
+
+            # --- Extract key frames (video only) ---
+            frame_paths: List[str] = []
+            if is_video:
+                print(f"  [media] Extracting key frames...")
+                frame_paths = self._extract_frames_ffmpeg(str(file_path))
+                print(f"  [media] Extracted {len(frame_paths)} frames")
+                result["frame_paths"] = frame_paths
+
+            # --- Build content and chunks ---
+            content_parts: List[str] = []
+            chunks: List[dict] = []
+
+            if transcript:
+                content_parts.append(transcript)
+                # Chunk transcript into ~500-char segments for embedding
+                words = transcript.split()
+                chunk_words: List[str] = []
+                for word in words:
+                    chunk_words.append(word)
+                    if len(" ".join(chunk_words)) >= 500:
+                        chunk_text = " ".join(chunk_words)
+                        chunks.append({"content": chunk_text, "type": "transcript"})
+                        chunk_words = []
+                if chunk_words:
+                    chunk_text = " ".join(chunk_words)
+                    if chunk_text.strip():
+                        chunks.append({"content": chunk_text, "type": "transcript"})
+
+            if not content_parts:
+                # No transcript available — placeholder
+                content_parts.append(f"[{media_type.title()}: {file_path.name}]")
+
+            result["content"] = "\n\n".join(content_parts)
+            result["chunks"] = chunks
+
+        except Exception as e:
+            # CRITICAL SAFETY: Never let media processing crash the system
+            print(f"  [CRITICAL] Media processing failed for {file_path.name}: {e}")
+            print(f"  [CRITICAL] Returning empty document to prevent system crash.")
+            result["content"] = f"[{media_type.title()}: {file_path.name} — processing failed]"
+            result["chunks"] = []
+            result["frame_paths"] = []
+            result["audio_path"] = None
+
+        return result
+
 
 class MarkdownReportGenerator:
     """Generate markdown reports from VL-RAG-Graph-RLM results."""
@@ -338,8 +613,8 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "sambanova": {
         "env_key": "SAMBANOVA_API_KEY",
         "url": "https://cloud.sambanova.ai",
-        "description": "SambaNova Cloud — DeepSeek-V3.2 (200+ tok/s, 128K context, 200K TPD free)",
-        "context_budget": 8000,
+        "description": "SambaNova Cloud — DeepSeek-V3-0324 (200+ tok/s, 32K context, 200K TPD free)",
+        "context_budget": 32000,
     },
     "nebius": {
         "env_key": "NEBIUS_API_KEY",
@@ -473,6 +748,8 @@ def run_analysis(
     model: Optional[str] = None,
     max_depth: int = 3,
     max_iterations: int = 10,
+    use_api: bool = False,
+    text_only: bool = False,
 ) -> dict:
     """Run full VL-RAG-Graph-RLM analysis with any supported provider.
 
@@ -515,11 +792,13 @@ def run_analysis(
     if not resolved_model:
         resolved_model = None  # let VLRAGGraphRLM resolve from env/defaults
 
+    _embed_mode = "API" if use_api else ("text-only" if text_only else "local Qwen3-VL")
     print("=" * 70)
     print(f"vrlmrag v{__version__} — Full VL-RAG-Graph-RLM Pipeline")
     print("=" * 70)
     print(f"Provider:       {provider}")
     print(f"Model:          {resolved_model or '(auto-detect from env/defaults)'}")
+    print(f"Embedding:      {_embed_mode}")
     print(f"Context budget: {context_budget:,} chars")
     print(f"Input:          {input_path}")
     print("=" * 70)
@@ -527,29 +806,9 @@ def run_analysis(
     overall_start = time.time()
 
     # ================================================================
-    # Step 1: Document Processing
+    # Persistence directory — used for embeddings + knowledge graph
+    # Created early so manifest-based change detection can work.
     # ================================================================
-    processor = DocumentProcessor()
-    print(f"\n[1/6] Processing documents: {input_path}")
-
-    documents = processor.process_path(input_path)
-    if isinstance(documents, dict):
-        documents = [documents]
-
-    all_chunks: List[dict] = []
-    for doc in documents:
-        all_chunks.extend(doc.get("chunks", []))
-
-    print(f"  Processed {len(documents)} document(s), {len(all_chunks)} chunks")
-
-    # ================================================================
-    # Step 2: Qwen3-VL Embedding + Vector Store
-    # ================================================================
-    embedding_model_name = "Qwen/Qwen3-VL-Embedding-2B"
-    reranker_model_name = "Qwen/Qwen3-VL-Reranker-2B"
-    embedded_count = 0
-
-    # Persistence directory — used for embeddings + knowledge graph in all modes
     _store_path = Path(input_path)
     if _store_path.is_file():
         store_dir = _store_path.parent / ".vrlmrag_store"
@@ -557,7 +816,198 @@ def run_analysis(
         store_dir = _store_path / ".vrlmrag_store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    if HAS_QWEN3VL:
+    # ================================================================
+    # Manifest-based change detection — skip unchanged files
+    # ================================================================
+    _current_files = _scan_supported_files(Path(input_path))
+    _manifest = _load_manifest(store_dir)
+    _new_or_modified, _deleted = _detect_file_changes(_current_files, _manifest)
+    _embeddings_exist = (store_dir / "embeddings.json").exists() or (store_dir / "embeddings_text.json").exists()
+    _needs_processing = bool(_new_or_modified) or not _embeddings_exist
+
+    if _embeddings_exist and not _needs_processing:
+        print(f"\n[1/6] Store up-to-date — {len(_current_files)} file(s) unchanged, skipping document processing")
+    else:
+        if _embeddings_exist and _new_or_modified:
+            print(f"\n[1/6] Incremental update — {len(_new_or_modified)} new/modified file(s)")
+        else:
+            print(f"\n[1/6] Processing documents: {input_path}")
+
+    # ================================================================
+    # Step 1: Document Processing
+    # Local mode: Parakeet ASR transcribes audio → text chunks
+    # API mode: audio/video handled by omni model at embedding time
+    # ================================================================
+    documents: List[dict] = []
+    all_chunks: List[dict] = []
+
+    if _needs_processing:
+        _transcriber = None
+        if not use_api and not text_only and HAS_PARAKEET:
+            print("  [init] Parakeet ASR available for audio transcription")
+            _transcriber = create_parakeet_transcriber(
+                cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
+            )
+        processor = DocumentProcessor(
+            transcription_provider=_transcriber,
+            use_api=use_api,
+        )
+
+        if _new_or_modified and _embeddings_exist:
+            # Incremental: only process changed files
+            for fpath in _new_or_modified:
+                result = processor.process_path(fpath)
+                if isinstance(result, dict):
+                    documents.append(result)
+                elif isinstance(result, list):
+                    documents.extend(result)
+        else:
+            # Full processing (first run or no store)
+            result = processor.process_path(input_path)
+            if isinstance(result, dict):
+                documents = [result]
+            elif isinstance(result, list):
+                documents = result
+
+        for doc in documents:
+            all_chunks.extend(doc.get("chunks", []))
+
+        print(f"  Processed {len(documents)} document(s), {len(all_chunks)} chunks")
+
+    # ================================================================
+    # Step 2: Qwen3-VL Embedding + Vector Store
+    # Local models acquire the cross-process lock to ensure only one
+    # model is loaded in RAM at a time (across all CLI/MCP sessions).
+    # API-based embeddings bypass the lock entirely.
+    # ================================================================
+    embedding_model_name = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+    reranker_model_name = os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2")
+    embedded_count = 0
+
+    store = None
+    reranker_vl = None
+    _lock_ctx = None
+
+    if text_only and HAS_TEXT_EMBEDDING:
+        text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        _lock_ctx = local_model_lock(text_model, description="CLI run_analysis (text-only)")
+        _lock_ctx.__enter__()
+        print(f"\n[2/6] Loading text-only embedding ({text_model})...")
+        embedder = create_text_embedder(model_name=text_model)
+        embedding_model_name = text_model
+        print(f"  Embedding dim: {embedder.embedding_dim}")
+
+        storage_file = str(store_dir / "embeddings_text.json")
+
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=storage_file,
+        )
+    elif use_api and HAS_API_EMBEDDING:
+        print("\n[2/6] Loading API-based embedding (OpenRouter + ZenMux omni)...")
+        embedder = create_api_embedder()
+        embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+        vlm_model = os.getenv("VRLMRAG_VLM_MODEL", "inclusionai/ming-flash-omni-preview")
+        print(f"  Embedding model: {embedding_model_name}")
+        print(f"  Omni VLM model:  {vlm_model}")
+
+        storage_file = str(store_dir / "embeddings.json")
+
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=storage_file,
+        )
+        existing_count = len(store.documents)
+        if existing_count:
+            print(f"  Loaded {existing_count} existing embeddings from store")
+
+        # Embed text chunks via API
+        skipped_count = 0
+        print(f"\n[3/6] Embedding {len(all_chunks)} chunks via API...")
+        for chunk in all_chunks:
+            content = chunk.get("content", "")
+            if not content.strip():
+                continue
+            if store.content_exists(content):
+                skipped_count += 1
+                continue
+            metadata = {"type": chunk.get("type", "text")}
+            if "slide" in chunk:
+                metadata["slide"] = chunk["slide"]
+            store.add_text(
+                content=content, metadata=metadata,
+                instruction=_DOCUMENT_INSTRUCTION,
+            )
+            embedded_count += 1
+
+        # Embed images (PPTX slides) via omni model
+        for doc in documents:
+            for img_info in doc.get("image_data", []):
+                try:
+                    temp_path = f"/tmp/vrlmrag_{img_info['filename']}"
+                    with open(temp_path, "wb") as f:
+                        f.write(img_info["blob"])
+                    prev_count = len(store.documents)
+                    store.add_image(
+                        image_path=temp_path,
+                        description=f"Image from slide {img_info['slide']}",
+                        metadata={
+                            "type": "image",
+                            "slide": img_info["slide"],
+                            "filename": img_info["filename"],
+                        },
+                        instruction=_DOCUMENT_INSTRUCTION,
+                    )
+                    if len(store.documents) > prev_count:
+                        embedded_count += 1
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    print(f"  Warning: Could not embed image: {e}")
+
+        # Embed video frames via omni model (ZenMux describes → embeds)
+        for doc in documents:
+            frame_paths = doc.get("frame_paths", [])
+            if frame_paths:
+                print(f"  Embedding {len(frame_paths)} video frames via omni model...")
+                for i, frame_path in enumerate(frame_paths):
+                    try:
+                        prev_count = len(store.documents)
+                        store.add_image(
+                            image_path=frame_path,
+                            description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                            metadata={
+                                "type": "video_frame",
+                                "frame_index": i,
+                                "source": doc["path"],
+                            },
+                            instruction=_DOCUMENT_INSTRUCTION,
+                        )
+                        if len(store.documents) > prev_count:
+                            embedded_count += 1
+                        else:
+                            skipped_count += 1
+                    except Exception as e:
+                        print(f"  Warning: Could not embed frame {i}: {e}")
+
+        print(f"  New embeddings: {embedded_count} | Skipped: {skipped_count}")
+        print(f"  Total in store: {len(store.documents)} documents")
+        print(f"  Store persisted to: {storage_file}")
+
+        # Update manifest after successful indexing
+        if _needs_processing:
+            _manifest["files"] = {str(k): v for k, v in _current_files.items()}
+            _save_manifest(store_dir, _manifest)
+
+        # FlashRank reranker (lightweight, works with API mode too)
+        if HAS_FLASHRANK:
+            print("\n[4/6] Loading FlashRank Reranker...")
+            reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
+            print(f"  Reranker loaded ({reranker_model_name})")
+    elif HAS_QWEN3VL:
+        _lock_ctx = local_model_lock(embedding_model_name, description="CLI run_analysis (Qwen3-VL)")
+        _lock_ctx.__enter__()
+
         import torch
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -623,33 +1073,54 @@ def run_analysis(
                 except Exception as e:
                     print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
 
+        # Embed video frames from media documents
+        for doc in documents:
+            frame_paths = doc.get("frame_paths", [])
+            if frame_paths:
+                print(f"  Embedding {len(frame_paths)} video frames...")
+                for i, frame_path in enumerate(frame_paths):
+                    try:
+                        prev_count = len(store.documents)
+                        store.add_image(
+                            image_path=frame_path,
+                            description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                            metadata={
+                                "type": "video_frame",
+                                "frame_index": i,
+                                "source": doc["path"],
+                            },
+                            instruction=_DOCUMENT_INSTRUCTION,
+                        )
+                        if len(store.documents) > prev_count:
+                            embedded_count += 1
+                        else:
+                            skipped_count += 1
+                    except Exception as e:
+                        print(f"  Warning: Could not embed frame {i}: {e}")
+
         print(f"  New embeddings: {embedded_count} | Skipped (already in store): {skipped_count}")
         print(f"  Total in store: {len(store.documents)} documents")
         print(f"  Store persisted to: {storage_file}")
 
-        # Free embedder before loading reranker to reduce peak RAM
-        # Embeddings are already computed and cached in store.
-        import gc
-        del embedder
-        store.embedding_provider = None
-        gc.collect()
-        if device == "mps":
-            torch.mps.empty_cache()
-        print("  Embedder freed to reclaim RAM")
-
-        # Load reranker
-        print("\n[4/6] Loading Qwen3-VL Reranker...")
-        reranker_vl = create_qwen3vl_reranker(
-            model_name=reranker_model_name, device=device
-        )
-        print("  Reranker loaded successfully")
+        # Load lightweight FlashRank reranker (~34 MB — coexists with embedder)
+        if HAS_FLASHRANK:
+            print("\n[4/6] Loading FlashRank Reranker...")
+            reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
+            print(f"  Reranker loaded ({reranker_model_name})")
+        else:
+            print("\n[4/6] FlashRank not available — using RRF-only retrieval")
+            print("  Install with: pip install flashrank")
     else:
         print("\n[2/6] Qwen3-VL not available — using fallback text reranking")
         print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
-        store = None
-        reranker_vl = None
         embedding_model_name = "N/A (fallback)"
         reranker_model_name = "N/A (fallback)"
+
+    # Release the local model lock after embedding is complete.
+    # RLM calls below are API-based and don't need the lock.
+    if _lock_ctx is not None:
+        _lock_ctx.__exit__(None, None, None)
+        _lock_ctx = None
 
     # ================================================================
     # Step 3: Initialize RLM
@@ -1099,6 +1570,8 @@ def run_interactive_session(
     max_depth: int = 3,
     max_iterations: int = 10,
     store_dir: Optional[str] = None,
+    use_api: bool = False,
+    text_only: bool = False,
 ) -> None:
     """Run an interactive VL-RAG-Graph-RLM session.
 
@@ -1160,18 +1633,66 @@ def run_interactive_session(
 
     # ----------------------------------------------------------------
     # Step 1: Load VL models (once)
+    # For interactive sessions, the local model lock is held for the
+    # entire session since the model stays resident in RAM.
+    # API-based embeddings bypass the lock entirely.
     # ----------------------------------------------------------------
-    embedding_model_name = "Qwen/Qwen3-VL-Embedding-2B"
-    reranker_model_name = "Qwen/Qwen3-VL-Reranker-2B"
+    embedding_model_name = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+    reranker_model_name = os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2")
 
-    embedder = None
     reranker_vl = None
     store: Optional["MultimodalVectorStore"] = None
+    _session_lock_ctx = None  # held for entire interactive session
 
-    if HAS_QWEN3VL:
+    if text_only and HAS_TEXT_EMBEDDING:
+        text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        _session_lock_ctx = local_model_lock(text_model, description="CLI interactive (text-only)")
+        _session_lock_ctx.__enter__()
+        print(f"\n[init] Loading text-only embedding ({text_model})...")
+        embedder = create_text_embedder(model_name=text_model)
+        embedding_model_name = text_model
+        print(f"  Embedding dim: {embedder.embedding_dim}")
+
+        storage_file_text = str(Path(session_dir) / "embeddings_text.json")
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=storage_file_text,
+        )
+        existing_docs = len(store.documents)
+        if existing_docs:
+            print(f"  Loaded {existing_docs} existing documents from store")
+
+        if HAS_FLASHRANK:
+            print("[init] Loading FlashRank Reranker...")
+            reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
+            print(f"  Reranker loaded ({reranker_model_name})")
+    elif use_api and HAS_API_EMBEDDING:
+        print("\n[init] Loading API-based embedding (OpenRouter + ZenMux)...")
+        embedder = create_api_embedder()
+        embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+        print(f"  Embedding model: {embedding_model_name}")
+
+        store = MultimodalVectorStore(
+            embedding_provider=embedder,
+            storage_path=storage_file,
+        )
+        existing_docs = len(store.documents)
+        if existing_docs:
+            print(f"  Loaded {existing_docs} existing documents from store")
+
+        if HAS_FLASHRANK:
+            print("[init] Loading FlashRank Reranker...")
+            reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
+            print(f"  Reranker loaded ({reranker_model_name})")
+    elif HAS_QWEN3VL:
+        _session_lock_ctx = local_model_lock(embedding_model_name, description="CLI interactive (Qwen3-VL)")
+        _session_lock_ctx.__enter__()
+
         import torch
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+        # Load embedder → create store (stays loaded for /add commands)
         print(f"\n[init] Loading Qwen3-VL Embedding model ({device})...")
         embedder = create_qwen3vl_embedder(
             model_name=embedding_model_name, device=device
@@ -1186,13 +1707,15 @@ def run_interactive_session(
         if existing_docs:
             print(f"  Loaded {existing_docs} existing documents from store")
 
-        print("[init] Loading Qwen3-VL Reranker...")
-        reranker_vl = create_qwen3vl_reranker(
-            model_name=reranker_model_name, device=device
-        )
-        print("  Reranker loaded successfully")
+        if HAS_FLASHRANK:
+            print("[init] Loading FlashRank Reranker...")
+            reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
+            print(f"  Reranker loaded ({reranker_model_name})")
+        else:
+            print("[init] FlashRank not available — using RRF-only retrieval")
+            print("  Install with: pip install flashrank")
     else:
-        print("\n[init] Qwen3-VL not available — using fallback text reranking")
+        print("\n[init] No embedding provider available — using fallback text reranking")
         print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
 
     # ----------------------------------------------------------------
@@ -1222,8 +1745,18 @@ def run_interactive_session(
 
     # ----------------------------------------------------------------
     # Step 4: Process initial documents (if provided)
+    # Local mode: Parakeet ASR transcribes audio → text chunks
+    # API mode: audio/video handled by omni model at embedding time
     # ----------------------------------------------------------------
-    processor = DocumentProcessor()
+    _transcriber = None
+    if not use_api and not text_only and HAS_PARAKEET:
+        _transcriber = create_parakeet_transcriber(
+            cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
+        )
+    processor = DocumentProcessor(
+        transcription_provider=_transcriber,
+        use_api=use_api,
+    )
     all_chunks: List[dict] = []
     all_documents: List[dict] = []
     rrf = ReciprocalRankFusion(k=60)
@@ -1232,7 +1765,12 @@ def run_interactive_session(
     total_query_time = 0.0
 
     def _ingest_path(path_str: str) -> int:
-        """Ingest documents from a path, returning count of new embeddings."""
+        """Ingest documents from a path, returning count of new embeddings.
+
+        The embedder stays loaded permanently and the lightweight
+        FlashRank reranker (~34 MB) coexists with it — no model
+        swapping needed.
+        """
         nonlocal knowledge_graph
         docs = processor.process_path(path_str)
         if isinstance(docs, dict):
@@ -1245,7 +1783,7 @@ def run_interactive_session(
         all_chunks.extend(new_chunks)
 
         embedded = 0
-        if store is not None and HAS_QWEN3VL:
+        if store is not None:
             for i, chunk in enumerate(new_chunks):
                 content = chunk.get("content", "")
                 if not content.strip():
@@ -1279,6 +1817,27 @@ def run_interactive_session(
                         embedded += 1
                     except Exception as e:
                         print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
+
+            # Embed video frames from media documents
+            for doc in docs:
+                frame_paths = doc.get("frame_paths", [])
+                if frame_paths:
+                    print(f"  Embedding {len(frame_paths)} video frames...")
+                    for i, frame_path in enumerate(frame_paths):
+                        try:
+                            store.add_image(
+                                image_path=frame_path,
+                                description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                                metadata={
+                                    "type": "video_frame",
+                                    "frame_index": i,
+                                    "source": doc["path"],
+                                },
+                                instruction=_DOCUMENT_INSTRUCTION,
+                            )
+                            embedded += 1
+                        except Exception as e:
+                            print(f"  Warning: Could not embed frame {i}: {e}")
 
         # Build/extend knowledge graph for new documents
         if new_chunks:
@@ -1335,114 +1894,120 @@ def run_interactive_session(
 
     # ----------------------------------------------------------------
     # Step 6: Interactive REPL
+    # The try/finally ensures the session lock is released on exit.
     # ----------------------------------------------------------------
     print("\n" + "=" * 70)
     print("Interactive session ready. Type queries or commands.")
     print("Commands: /add <path>  /kg  /stats  /save [path]  /help  /quit")
     print("=" * 70)
 
-    while True:
-        try:
-            user_input = input("\nvrlmrag> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n[session] Goodbye.")
-            break
+    try:
+        while True:
+            try:
+                user_input = input("\nvrlmrag> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[session] Goodbye.")
+                break
 
-        if not user_input:
-            continue
-
-        # ---- Commands ----
-        if user_input.lower() in ("/quit", "/exit", "/q"):
-            print("[session] Goodbye.")
-            break
-
-        if user_input.lower() == "/help":
-            print(
-                "Commands:\n"
-                "  <text>            Query loaded documents\n"
-                "  /add <path>       Add more documents (file or folder)\n"
-                "  /kg               Show the current knowledge graph\n"
-                "  /stats            Show session statistics\n"
-                "  /save [path]      Save current KG + session report\n"
-                "  /help             Show this help\n"
-                "  /quit             End session"
-            )
-            continue
-
-        if user_input.lower() == "/kg":
-            if knowledge_graph:
-                print(f"\n--- Knowledge Graph ({len(knowledge_graph):,} chars) ---")
-                print(knowledge_graph[:8000])
-                if len(knowledge_graph) > 8000:
-                    print(f"\n... ({len(knowledge_graph) - 8000:,} more chars)")
-            else:
-                print("No knowledge graph built yet. Add documents first.")
-            continue
-
-        if user_input.lower() == "/stats":
-            doc_count = len(store.documents) if store else len(all_chunks)
-            print(
-                f"\n--- Session Statistics ---\n"
-                f"  Provider:           {provider} (model: {rlm.model})\n"
-                f"  Documents in store: {doc_count}\n"
-                f"  Total chunks:       {len(all_chunks)}\n"
-                f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
-                f"  Queries run:        {query_count}\n"
-                f"  Total query time:   {total_query_time:.2f}s\n"
-                f"  Avg query time:     {(total_query_time / query_count):.2f}s"
-                if query_count else
-                f"\n--- Session Statistics ---\n"
-                f"  Provider:           {provider} (model: {rlm.model})\n"
-                f"  Documents in store: {doc_count}\n"
-                f"  Total chunks:       {len(all_chunks)}\n"
-                f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
-                f"  Queries run:        0\n"
-                f"  Total query time:   0.00s"
-            )
-            continue
-
-        if user_input.lower().startswith("/save"):
-            parts = user_input.split(maxsplit=1)
-            save_path = parts[1] if len(parts) > 1 else str(session_dir / "session_report.md")
-            generator = MarkdownReportGenerator()
-            results = {
-                "provider": provider,
-                "model": rlm.model,
-                "embedding_model": embedding_model_name if HAS_QWEN3VL else "N/A",
-                "reranker_model": reranker_model_name if HAS_QWEN3VL else "N/A",
-                "document_count": len(all_documents),
-                "total_chunks": len(all_chunks),
-                "embedded_count": len(store.documents) if store else 0,
-                "execution_time": total_query_time,
-                "documents": all_documents,
-                "knowledge_graph": knowledge_graph,
-                "queries": [],
-            }
-            report = generator.generate(results, save_path)
-            print(f"  Report saved to: {save_path}")
-            continue
-
-        if user_input.lower().startswith("/add"):
-            parts = user_input.split(maxsplit=1)
-            if len(parts) < 2:
-                print("Usage: /add <path>")
+            if not user_input:
                 continue
-            add_path = parts[1].strip()
-            if not Path(add_path).exists():
-                print(f"Error: Path not found: {add_path}")
-                continue
-            print(f"[ingest] Processing: {add_path}")
-            _ingest_path(add_path)
-            continue
 
-        # ---- Default: treat as query ----
-        print(f"  Querying...")
-        result = _run_query(user_input)
-        print(f"\n{result['response']}")
-        if result.get("time"):
-            print(f"\n  [{result['time']:.2f}s]")
-        if result.get("sources"):
-            print(f"  [{len(result['sources'])} sources retrieved]")
+            # ---- Commands ----
+            if user_input.lower() in ("/quit", "/exit", "/q"):
+                print("[session] Goodbye.")
+                break
+
+            if user_input.lower() == "/help":
+                print(
+                    "Commands:\n"
+                    "  <text>            Query loaded documents\n"
+                    "  /add <path>       Add more documents (file or folder)\n"
+                    "  /kg               Show the current knowledge graph\n"
+                    "  /stats            Show session statistics\n"
+                    "  /save [path]      Save current KG + session report\n"
+                    "  /help             Show this help\n"
+                    "  /quit             End session"
+                )
+                continue
+
+            if user_input.lower() == "/kg":
+                if knowledge_graph:
+                    print(f"\n--- Knowledge Graph ({len(knowledge_graph):,} chars) ---")
+                    print(knowledge_graph[:8000])
+                    if len(knowledge_graph) > 8000:
+                        print(f"\n... ({len(knowledge_graph) - 8000:,} more chars)")
+                else:
+                    print("No knowledge graph built yet. Add documents first.")
+                continue
+
+            if user_input.lower() == "/stats":
+                doc_count = len(store.documents) if store else len(all_chunks)
+                print(
+                    f"\n--- Session Statistics ---\n"
+                    f"  Provider:           {provider} (model: {rlm.model})\n"
+                    f"  Documents in store: {doc_count}\n"
+                    f"  Total chunks:       {len(all_chunks)}\n"
+                    f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
+                    f"  Queries run:        {query_count}\n"
+                    f"  Total query time:   {total_query_time:.2f}s\n"
+                    f"  Avg query time:     {(total_query_time / query_count):.2f}s"
+                    if query_count else
+                    f"\n--- Session Statistics ---\n"
+                    f"  Provider:           {provider} (model: {rlm.model})\n"
+                    f"  Documents in store: {doc_count}\n"
+                    f"  Total chunks:       {len(all_chunks)}\n"
+                    f"  Knowledge graph:    {len(knowledge_graph):,} chars\n"
+                    f"  Queries run:        0\n"
+                    f"  Total query time:   0.00s"
+                )
+                continue
+
+            if user_input.lower().startswith("/save"):
+                parts = user_input.split(maxsplit=1)
+                save_path = parts[1] if len(parts) > 1 else str(session_dir / "session_report.md")
+                generator = MarkdownReportGenerator()
+                results = {
+                    "provider": provider,
+                    "model": rlm.model,
+                    "embedding_model": embedding_model_name if HAS_QWEN3VL else "N/A",
+                    "reranker_model": reranker_model_name if HAS_QWEN3VL else "N/A",
+                    "document_count": len(all_documents),
+                    "total_chunks": len(all_chunks),
+                    "embedded_count": len(store.documents) if store else 0,
+                    "execution_time": total_query_time,
+                    "documents": all_documents,
+                    "knowledge_graph": knowledge_graph,
+                    "queries": [],
+                }
+                report = generator.generate(results, save_path)
+                print(f"  Report saved to: {save_path}")
+                continue
+
+            if user_input.lower().startswith("/add"):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) < 2:
+                    print("Usage: /add <path>")
+                    continue
+                add_path = parts[1].strip()
+                if not Path(add_path).exists():
+                    print(f"Error: Path not found: {add_path}")
+                    continue
+                print(f"[ingest] Processing: {add_path}")
+                _ingest_path(add_path)
+                continue
+
+            # ---- Default: treat as query ----
+            print(f"  Querying...")
+            result = _run_query(user_input)
+            print(f"\n{result['response']}")
+            if result.get("time"):
+                print(f"\n  [{result['time']:.2f}s]")
+            if result.get("sources"):
+                print(f"  [{len(result['sources'])} sources retrieved]")
+    finally:
+        # Release the local model lock when the session ends
+        if _session_lock_ctx is not None:
+            _session_lock_ctx.__exit__(None, None, None)
 
 
 # ── Collection operations ──────────────────────────────────────────────
@@ -1456,6 +2021,8 @@ def run_collection_add(
     max_depth: int = 3,
     max_iterations: int = 10,
     description: str = "",
+    use_api: bool = False,
+    text_only: bool = False,
 ) -> None:
     """Add documents from *input_path* into one or more named collections.
 
@@ -1474,7 +2041,15 @@ def run_collection_add(
     resolved_model = model
 
     # Process documents once
-    processor = DocumentProcessor()
+    _transcriber = None
+    if not use_api and not text_only and HAS_PARAKEET:
+        _transcriber = create_parakeet_transcriber(
+            cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
+        )
+    processor = DocumentProcessor(
+        transcription_provider=_transcriber,
+        use_api=use_api,
+    )
     print(f"[collection] Processing: {input_path}")
     documents = processor.process_path(input_path)
     if isinstance(documents, dict):
@@ -1508,13 +2083,32 @@ def run_collection_add(
         store = None
         embedded_count = 0
         skipped_count = 0
+        _coll_lock_ctx = None
 
-        if HAS_QWEN3VL:
+        if text_only and HAS_TEXT_EMBEDDING:
+            text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+            _coll_lock_ctx = local_model_lock(text_model, description=f"CLI collection_add:{slug} (text-only)")
+            _coll_lock_ctx.__enter__()
+            embedder = create_text_embedder(model_name=text_model)
+            store = MultimodalVectorStore(
+                embedding_provider=embedder, storage_path=storage_file,
+            )
+        elif use_api and HAS_API_EMBEDDING:
+            embedder = create_api_embedder()
+            store = MultimodalVectorStore(
+                embedding_provider=embedder, storage_path=storage_file,
+            )
+        elif HAS_QWEN3VL:
+            _emb_model = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+            _coll_lock_ctx = local_model_lock(_emb_model, description=f"CLI collection_add:{slug} (Qwen3-VL)")
+            _coll_lock_ctx.__enter__()
+
             import torch
 
             device = "mps" if torch.backends.mps.is_available() else "cpu"
             embedder = create_qwen3vl_embedder(
-                model_name="Qwen/Qwen3-VL-Embedding-2B", device=device,
+                model_name=_emb_model,
+                device=device,
             )
             store = MultimodalVectorStore(
                 embedding_provider=embedder, storage_path=storage_file,
@@ -1568,6 +2162,11 @@ def run_collection_add(
         else:
             print("  Warning: Qwen3-VL not available — skipping embeddings")
 
+        # Release the local model lock — KG extraction below is API-based
+        if _coll_lock_ctx is not None:
+            _coll_lock_ctx.__exit__(None, None, None)
+            _coll_lock_ctx = None
+
         # Build/merge knowledge graph
         knowledge_graph = collection_load_kg(slug)
         if all_chunks:
@@ -1596,6 +2195,8 @@ def run_collection_query(
     max_depth: int = 3,
     max_iterations: int = 10,
     output: Optional[str] = None,
+    use_api: bool = False,
+    text_only: bool = False,
 ) -> None:
     """Query one or more collections, blending their stores and KGs.
 
@@ -1625,21 +2226,33 @@ def run_collection_query(
     rlm = VLRAGGraphRLM(**rlm_kwargs)
 
     # Load and blend collections
+    # Local models acquire the cross-process lock to ensure only one
+    # model is loaded in RAM at a time (across all CLI/MCP sessions).
     blended_store = None
     blended_kg = ""
     all_chunks: List[dict] = []
     embedder = None
     reranker_vl = None
+    _cq_lock_ctx = None
 
-    if HAS_QWEN3VL:
+    if text_only and HAS_TEXT_EMBEDDING:
+        text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        _cq_lock_ctx = local_model_lock(text_model, description="CLI collection_query (text-only)")
+        _cq_lock_ctx.__enter__()
+        embedder = create_text_embedder(model_name=text_model)
+    elif use_api and HAS_API_EMBEDDING:
+        embedder = create_api_embedder()
+    elif HAS_QWEN3VL:
+        _emb_model = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+        _cq_lock_ctx = local_model_lock(_emb_model, description="CLI collection_query (Qwen3-VL)")
+        _cq_lock_ctx.__enter__()
+
         import torch
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         embedder = create_qwen3vl_embedder(
-            model_name="Qwen/Qwen3-VL-Embedding-2B", device=device,
-        )
-        reranker_vl = create_qwen3vl_reranker(
-            model_name="Qwen/Qwen3-VL-Reranker-2B", device=device,
+            model_name=_emb_model,
+            device=device,
         )
 
     collection_labels = []
@@ -1659,7 +2272,7 @@ def run_collection_query(
             blended_kg = collection_merge_kg(blended_kg, kg)
 
         # Load store
-        if HAS_QWEN3VL and embedder:
+        if embedder:
             storage_file = collection_embeddings_path(slug)
             store = MultimodalVectorStore(
                 embedding_provider=embedder, storage_path=storage_file,
@@ -1667,10 +2280,20 @@ def run_collection_query(
             if blended_store is None:
                 blended_store = store
             else:
-                # Merge documents from this store into the blended store
                 for doc_id, doc in store.documents.items():
                     if doc_id not in blended_store.documents:
                         blended_store.documents[doc_id] = doc
+
+    # Load lightweight FlashRank reranker (~34 MB — coexists with embedder)
+    if HAS_FLASHRANK:
+        reranker_vl = create_flashrank_reranker(
+            model_name=os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2"),
+        )
+
+    # Release the local model lock — RLM query below is API-based
+    if _cq_lock_ctx is not None:
+        _cq_lock_ctx.__exit__(None, None, None)
+        _cq_lock_ctx = None
 
     label = " + ".join(collection_labels)
     print(f"[query] Collections: {label}")
@@ -1802,17 +2425,21 @@ def main():
         prog="vrlmrag",
         description=(
             "vrlmrag — Full VL-RAG-Graph-RLM document analysis pipeline.\n\n"
-            "Process documents (PPTX, PDF, TXT, MD) through the complete 6-pillar\n"
-            "multimodal pipeline: VL embeddings → RAG → reranking → knowledge graph\n"
-            "→ recursive LLM reasoning → markdown report."
+            "Process documents (PPTX, PDF, TXT, MD, MP4, WAV, MP3) through the\n"
+            "complete 6-pillar multimodal pipeline: VL embeddings → RAG → reranking\n"
+            "→ knowledge graph → recursive LLM reasoning → markdown report.\n\n"
+            "Default: API mode (uses provider hierarchy for embeddings + LLM).\n"
+            "Use --local to opt into local Qwen3-VL models (blocked for video/audio)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  vrlmrag presentation.pptx                           # auto mode\n"
+            "  vrlmrag presentation.pptx                           # API mode (default)\n"
+            "  vrlmrag --local presentation.pptx                   # local Qwen3-VL models\n"
             "  vrlmrag --provider sambanova presentation.pptx      # explicit provider\n"
             "  vrlmrag --provider nebius document.pdf -o report.md  # with output\n"
             "  vrlmrag ./docs -q 'Summarize key findings'          # auto + query\n"
+            "  vrlmrag video.mp4 -q 'What is discussed?'           # video (API only)\n"
             "  vrlmrag --interactive presentation.pptx             # interactive session\n"
             "  vrlmrag -i ./codebase                               # load & query continuously\n"
             "  vrlmrag --show-hierarchy                            # see fallback order\n"
@@ -1860,6 +2487,11 @@ def main():
     )
 
     parser.add_argument(
+        "--lock-status", action="store_true",
+        help="Show the status of the cross-process local model lock",
+    )
+
+    parser.add_argument(
         "--provider", "-p",
         metavar="NAME",
         default="auto",
@@ -1868,7 +2500,7 @@ def main():
 
     parser.add_argument(
         "input", nargs="?", metavar="PATH",
-        help="File or folder to process (PPTX, PDF, TXT, MD)",
+        help="File or folder to process (PPTX, PDF, TXT, MD, MP4, WAV, MP3)",
     )
 
     parser.add_argument(
@@ -1904,6 +2536,22 @@ def main():
     parser.add_argument(
         "--store-dir",
         help="Directory for persisting embeddings and knowledge graph (default: .vrlmrag_store next to input)",
+    )
+
+    parser.add_argument(
+        "--local", action="store_true",
+        default=os.environ.get("VRLMRAG_LOCAL", "").lower() in ("true", "1", "yes"),
+        help="Use local Qwen3-VL model instead of API embeddings (env: VRLMRAG_LOCAL). "
+             "Default is API mode. Local mode is blocked for video/audio files.",
+    )
+
+    # Backward-compatible hidden alias
+    parser.add_argument("--use-api", action="store_true", help=argparse.SUPPRESS)
+
+    parser.add_argument(
+        "--text-only", action="store_true",
+        default=os.environ.get("VRLMRAG_TEXT_ONLY", "").lower() in ("true", "1", "yes"),
+        help="Use lightweight text-only embeddings — skips image/video (env: VRLMRAG_TEXT_ONLY)",
     )
 
     # ── Collection arguments ──────────────────────────────────────────
@@ -1955,6 +2603,23 @@ def main():
         show_hierarchy()
         return
 
+    if args.lock_status:
+        status = lock_status()
+        print(f"vrlmrag v{__version__} — Local Model Lock Status\n")
+        if not status["locked"]:
+            print("Status:  FREE — no local model is currently loaded in RAM")
+        else:
+            print("Status:  HELD — a local model is loaded in RAM")
+            print(f"  PID:          {status['holder_pid']}")
+            print(f"  Alive:        {status['holder_alive']}")
+            print(f"  Model:        {status['model_id']}")
+            print(f"  Since:        {status['acquired_at']}")
+            print(f"  Process:      {status['process_name']}")
+            print(f"  Description:  {status['description']}")
+        print(f"\nThis process:   {'holds lock' if status['this_process_holds'] else 'does not hold lock'}")
+        print(f"Lock file:      {Path.home() / '.vrlmrag' / 'local_model.lock'}")
+        return
+
     # Resolve provider and input from args (support old-style flags)
     provider = args.provider
     input_path = args.input
@@ -1965,6 +2630,19 @@ def main():
     elif args.nebius and not provider:
         provider = "nebius"
         input_path = args.nebius
+
+    # ── Compute use_api from --local flag ─────────────────────────────
+    # Default: API mode (use_api=True). --local opts into local models.
+    # --use-api is a backward-compatible alias (API is already default).
+    use_api = not args.local
+
+    # Block local models for media files — always force API for video/audio
+    if input_path and not use_api:
+        _input_ext = Path(input_path).suffix.lower()
+        if _input_ext in _MEDIA_EXTENSIONS:
+            print(f"[safety] Local models are blocked for media files ({_input_ext}).")
+            print(f"         Forcing API mode to prevent system overload.")
+            use_api = True
 
     # ── Collection dispatch ────────────────────────────────────────────
     if args.collection_list:
@@ -1999,6 +2677,8 @@ def main():
             max_depth=args.max_depth,
             max_iterations=args.max_iterations,
             description=args.collection_description,
+            use_api=use_api,
+            text_only=args.text_only,
         )
         return
 
@@ -2011,6 +2691,8 @@ def main():
             max_depth=args.max_depth,
             max_iterations=args.max_iterations,
             output=args.output,
+            use_api=use_api,
+            text_only=args.text_only,
         )
         return
 
@@ -2028,6 +2710,8 @@ def main():
             max_depth=args.max_depth,
             max_iterations=args.max_iterations,
             store_dir=coll_dir,
+            use_api=use_api,
+            text_only=args.text_only,
         )
         return
 
@@ -2040,6 +2724,8 @@ def main():
             max_depth=args.max_depth,
             max_iterations=args.max_iterations,
             store_dir=args.store_dir,
+            use_api=use_api,
+            text_only=args.text_only,
         )
         return
 
@@ -2057,6 +2743,8 @@ def main():
         model=args.model,
         max_depth=args.max_depth,
         max_iterations=args.max_iterations,
+        use_api=use_api,
+        text_only=args.text_only,
     )
 
 

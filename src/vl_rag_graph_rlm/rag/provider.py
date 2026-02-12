@@ -341,9 +341,9 @@ class MultimodalVLRAGGraphRLM:
         llm_provider: str = "openai",
         llm_model: str = "gpt-4o",
         llm_api_key: Optional[str] = None,
-        embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B",
+        embedding_model: Optional[str] = None,
         use_reranker: bool = True,
-        reranker_model: str = "Qwen/Qwen3-VL-Reranker-2B",
+        reranker_model: Optional[str] = None,
         storage_path: Optional[str] = None,
         **model_kwargs
     ):

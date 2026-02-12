@@ -58,10 +58,11 @@ class OpenAICompatibleClient(BaseLM):
             "reasoning": "qwen-3-235b-a22b-instruct-2507",
         },
         "sambanova": {
-            "default": "DeepSeek-V3.2",
+            "default": "DeepSeek-V3-0324",
             "latest": "DeepSeek-V3.1",
             "reasoning": "DeepSeek-R1-0528",
             "flagship": "gpt-oss-120b",
+            "legacy_8k": "DeepSeek-V3.2",  # ⚠️ 8K token limit — avoid for RAG
         },
         "nebius": {
             "default": "MiniMaxAI/MiniMax-M2.1",
@@ -83,7 +84,7 @@ class OpenAICompatibleClient(BaseLM):
     # downtime, etc.), the client automatically retries with this model.
     # Override per-provider via {PROVIDER}_FALLBACK_MODEL env var.
     FALLBACK_MODELS = {
-        "sambanova": "DeepSeek-V3.1",
+        "sambanova": "DeepSeek-V3.1",  # 32K+ context — safe fallback
         "groq": "llama-3.3-70b-versatile",
         "cerebras": "gpt-oss-120b",
         "nebius": "zai-org/GLM-4.7-FP8",
@@ -204,12 +205,64 @@ class OpenAICompatibleClient(BaseLM):
 
         return response.choices[0].message.content
 
+    @staticmethod
+    def _is_context_length_error(error: Exception) -> bool:
+        """Check if an error is a context-length / token-limit error."""
+        msg = str(error).lower()
+        return any(phrase in msg for phrase in (
+            "maximum context length",
+            "context_length_exceeded",
+            "max_tokens",
+            "token limit",
+            "reduce the length",
+        ))
+
+    @staticmethod
+    def _truncate_prompt(prompt: str | list[dict[str, Any]], ratio: float = 0.5) -> str | list[dict[str, Any]]:
+        """Truncate prompt content by *ratio* to fit within token limits."""
+        if isinstance(prompt, str):
+            target = int(len(prompt) * ratio)
+            return prompt[:target]
+        elif isinstance(prompt, list):
+            truncated = []
+            for msg in prompt:
+                m = dict(msg)
+                if isinstance(m.get("content"), str) and len(m["content"]) > 500:
+                    m["content"] = m["content"][:int(len(m["content"]) * ratio)]
+                truncated.append(m)
+            return truncated
+        return prompt
+
     def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Sync completion with automatic model fallback on any error."""
+        """Sync completion with context-truncation retry + model fallback.
+
+        On context-length errors:
+          1. Truncate input by 50% and retry with the same model
+          2. If still failing, fall back to the fallback model
+        On other errors:
+          Fall back to the fallback model directly
+        """
         effective = model or self.model_name
         try:
             return self._raw_completion(prompt, model=model)
         except Exception as e:
+            # Context-length error → try truncating first before model fallback
+            if self._is_context_length_error(e):
+                logger.warning(
+                    "%s: %s context-length exceeded, retrying with truncated input",
+                    self.provider, effective,
+                )
+                try:
+                    truncated = self._truncate_prompt(prompt, ratio=0.5)
+                    return self._raw_completion(truncated, model=model)
+                except Exception as e2:
+                    if not self._is_context_length_error(e2):
+                        raise  # different error after truncation
+                    logger.warning(
+                        "%s: %s still exceeds context after truncation (%s)",
+                        self.provider, effective, e2,
+                    )
+
             fb = self._fallback_model
             if not fb or effective == fb:
                 raise  # no fallback configured or already on fallback
@@ -221,11 +274,27 @@ class OpenAICompatibleClient(BaseLM):
             return self._raw_completion(prompt, model=fb)
 
     async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
-        """Async completion with automatic model fallback on any error."""
+        """Async completion with context-truncation retry + model fallback."""
         effective = model or self.model_name
         try:
             return await self._raw_acompletion(prompt, model=model, **kwargs)
         except Exception as e:
+            if self._is_context_length_error(e):
+                logger.warning(
+                    "%s: %s context-length exceeded, retrying with truncated input",
+                    self.provider, effective,
+                )
+                try:
+                    truncated = self._truncate_prompt(prompt, ratio=0.5)
+                    return await self._raw_acompletion(truncated, model=model, **kwargs)
+                except Exception as e2:
+                    if not self._is_context_length_error(e2):
+                        raise
+                    logger.warning(
+                        "%s: %s still exceeds context after truncation (%s)",
+                        self.provider, effective, e2,
+                    )
+
             fb = self._fallback_model
             if not fb or effective == fb:
                 raise  # no fallback configured or already on fallback
@@ -716,20 +785,23 @@ class SambaNovaClient(OpenAICompatibleClient):
     """
     Client for SambaNova Cloud API.
 
-    Available models (Feb 2026, 128K context unless noted):
-        - DeepSeek-V3.2: DeepSeek V3.2 (200+ tok/sec) — default
-        - DeepSeek-V3.1: DeepSeek V3.1 — automatic fallback on any error
-        - DeepSeek-V3-0324: DeepSeek V3 March 2024
+    Available models (Feb 2026):
+        - DeepSeek-V3-0324: DeepSeek V3 (32K context, production) — default
+        - DeepSeek-V3.1: DeepSeek V3.1 (32K+ context, production) — fallback
+        - DeepSeek-V3.2: DeepSeek V3.2 (⚠️ 8K token limit — avoid for RAG)
         - DeepSeek-R1-0528: Reasoning model
         - DeepSeek-R1-Distill-Llama-70B: Distilled reasoning
         - gpt-oss-120b: GPT-OSS 120B flagship
         - Llama-4-Maverick-17B-128E-Instruct: Llama 4 Maverick
         - Meta-Llama-3.3-70B-Instruct: Llama 3.3 70B
-        - Qwen3-235B: Qwen 3 235B
+        - Qwen3-235B-A22B-Instruct-2507: Qwen 3 235B
         - Qwen3-32B: Qwen 3 32B
 
-    Model fallback (inherited from base): DeepSeek-V3.2 → DeepSeek-V3.1
+    Model fallback (inherited from base): DeepSeek-V3-0324 → DeepSeek-V3.1
     Override via SAMBANOVA_FALLBACK_MODEL env var.
+
+    ⚠️  DeepSeek-V3.2 has only 8,192 token context on SambaNova — too small
+    for RAG workloads. Use DeepSeek-V3-0324 or DeepSeek-V3.1 instead.
 
     Rate limits (Free tier): 20 RPM, 40 RPD, 200K TPD
     Rate limits (Developer tier): 60 RPM, 12K RPD
@@ -742,7 +814,7 @@ class SambaNovaClient(OpenAICompatibleClient):
         api_key = api_key or os.getenv("SAMBANOVA_API_KEY")
         super().__init__(
             api_key=api_key,
-            model_name=model_name or "DeepSeek-V3.2",
+            model_name=model_name or "DeepSeek-V3-0324",
             base_url="https://api.sambanova.ai/v1",
             provider="sambanova",
             **kwargs,

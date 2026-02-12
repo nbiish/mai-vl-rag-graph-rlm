@@ -7,20 +7,28 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Document Intake                              │
-│  PPTX / PDF / TXT / MD → text chunks + extracted images             │
-└──────────────┬──────────────────────────────────┬───────────────────┘
-               │                                  │
-               ▼                                  ▼
+│  PPTX / PDF / TXT / MD / Video / Audio                              │
+│  → text chunks + extracted images + video frames + transcripts     │
+└──┬──────────────┬──────────────────┬───────────────┬───────────────┘
+   │              │                  │               │
+   │              │                  │               ▼
+   │              │                  │  ┌──────────────────────────┐
+   │              │                  │  │  Audio Transcription     │
+   │              │                  │  │  (Parakeet V3 / NeMo)    │
+   │              │                  │  │  Lazy-loaded, cached     │
+   │              │                  │  └──────────┬───────────────┘
+   │              │                  │             │ transcript text
+   ▼              ▼                  ▼             ▼
 ┌──────────────────────────┐    ┌──────────────────────────────────┐
 │  Qwen3-VL Embedding      │    │  Qwen3-VL Embedding              │
-│  (Text Chunks)            │    │  (Extracted Images)              │
+│  (Text + Transcripts)    │    │  (Images + Video Frames)         │
 │  Qwen/Qwen3-VL-Embed-2B  │    │  Qwen/Qwen3-VL-Embed-2B         │
 └──────────┬───────────────┘    └──────────┬───────────────────────┘
            │                               │
            ▼                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │              MultimodalVectorStore (Unified Vector Space)            │
-│  Text embeddings + Image embeddings stored together                 │
+│  Text + Image + Video + Audio embeddings stored together            │
 │  JSON persistence at .vrlmrag_store/embeddings.json                 │
 └──────────────┬──────────────────────────────────────────────────────┘
                │
@@ -108,6 +116,84 @@
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+## Three Embedding Modes
+
+The system supports three mutually exclusive embedding modes, selected via environment variables or CLI flags:
+
+| Mode | Flag / Env Var | RAM | Network | Best For |
+|------|---------------|-----|---------|----------|
+| **Text-Only** | `--text-only` / `VRLMRAG_TEXT_ONLY=true` | ~1.2 GB | Offline | `.txt`, `.md`, text-heavy PDFs |
+| **API** | `--use-api` / `VRLMRAG_USE_API=true` | ~200 MB | Required | Any content, low-RAM machines |
+| **Multimodal** (default) | Both false | ~4.6 GB | Offline | PowerPoints, PDFs with figures, images, video |
+
+### Text-Only Mode
+
+Uses `TextOnlyEmbeddingProvider` with Qwen3-Embedding-0.6B (~1.2 GB RAM). Skips image/video processing entirely — ideal for pure text documents.
+
+```python
+from vl_rag_graph_rlm.rag.text_embedding import create_text_embedder
+
+embedder = create_text_embedder(model_name="Qwen/Qwen3-Embedding-0.6B")
+embedding = embedder.embed_text("Machine learning uses statistical methods...")
+```
+
+**Implementation details:**
+- Uses standard `transformers.AutoModel` + `AutoTokenizer` (no Qwen3-VL vision dependencies)
+- Qwen3-Embedding format: `"Instruct: {instruction}\nQuery: {text}"`
+- Last-token pooling with L2 normalization (Qwen3-Embedding best practice)
+- Embedding dimension: 1024 (0.6B), 2048 (4B), 4096 (8B)
+- Storage: `embeddings_text.json` (separate from multimodal stores)
+
+### API Mode
+
+Uses `APIEmbeddingProvider` — OpenRouter for text embeddings + ZenMux omni VLM for image/video descriptions. Zero local GPU models.
+
+### Multimodal Mode (Default)
+
+Uses `Qwen3VLEmbeddingProvider` — full vision-language embedding with image/video/audio support. Largest RAM footprint but handles all content types.
+
+## Memory Management — Lightweight Coexistence Model
+
+Peak RAM is kept under ~5 GB by using a **lightweight reranker** that
+coexists with the embedder — no model swapping needed.
+
+```
+Qwen3-VL-Embedding-2B  ~4.6 GB  (local, stays loaded)
+FlashRank MiniLM-L-12   ~34 MB  (ONNX cross-encoder, coexists)
+─────────────────────────────────
+Total peak:             ~4.63 GB
+```
+
+> **Why not sequential load-free-load?**  Python + PyTorch on macOS does
+> not reliably return model memory to the OS after `del`.  Each
+> load/free cycle accumulated ~1-2 GB of unreclaimable RSS.  The
+> FlashRank approach eliminates this entirely.
+
+**Key design decisions:**
+
+| Component | Strategy | Why |
+|-----------|----------|-----|
+| `MultimodalRAGPipeline` | Lazy `@property` loading | `__init__` stores config only; models load on first access |
+| `pipeline.store` | Deferred creation | Store created (and embedder loaded) only when first document is added |
+| `pipeline.reranker` | FlashRank ONNX (~34 MB) | Coexists with embedder; no model swapping |
+| `pipeline.rlm` | Deferred creation | RLM client created only on first `query()` call |
+| MCP server `query_document` | Embedder + FlashRank | Both loaded; no `del`/`gc.collect()` needed |
+| CLI `run_analysis()` | Embedder + FlashRank | Both coexist; single ~4.63 GB peak |
+| Interactive `/add` | Embedder stays loaded | No model swapping on ingestion |
+| Video processing | ffmpeg frame extraction | Never loads full video into RAM; extracts only needed frames as JPEG |
+| Audio transcription | Lazy Parakeet V3 | Model loads on first `transcribe()` call; cached by file hash |
+| API mode (`--use-api`) | Zero local models | Future: API-based embeddings eliminate all local model RAM |
+
+### Expected RAM Profile
+
+| Phase | Peak RSS | Notes |
+|-------|----------|-------|
+| Init (pipeline configured) | ~207 MB | Zero models loaded |
+| Embedder + FlashRank loaded | ~4,635 MB | Single 2B model + 34 MB ONNX |
+| Video embedded (8 frames via ffmpeg) | ~4,635 MB | +0 MB — frames are tiny JPEGs |
+| Reranking (FlashRank) | ~4,635 MB | ONNX inference, negligible RAM |
+| API mode (future) | ~207 MB | Zero local models |
+
 ## Accuracy-First Query Pipeline
 
 Every query — in both `run_analysis()` and interactive mode — goes through
@@ -119,7 +205,7 @@ a single shared function `_run_vl_rag_query()` that guarantees the full
 | 1. Dense search | Qwen3-VL embedding (cosine sim) | `top_k=50`, instruction: `"Find passages that are relevant to and answer the following query."` |
 | 2. Keyword search | Token-overlap scoring | `top_k=50` |
 | 3. Fusion | Reciprocal Rank Fusion | `k=60`, weights `[4.0, 1.0]` (dense-heavy) |
-| 4. Reranking | Qwen3-VL cross-attention reranker | `30` candidates → `10` final results |
+| 4. Reranking | FlashRank ONNX cross-encoder (ms-marco-MiniLM-L-12-v2) | `30` candidates → `10` final results |
 | 5. KG augmentation | Persisted knowledge graph prepended | Up to `8000` chars (⅓ of context budget) |
 | 6. RLM completion | Recursive Language Model | `max_depth=3`, `max_iterations=10`, provider hierarchy fallback |
 
@@ -156,7 +242,7 @@ is persisted to `knowledge_graph.md` and merged across runs.
 | Core REPL | `src/vl_rag_graph_rlm/core/repl.py` | REPLExecutor with RestrictedPython sandbox |
 | Utils Parsing | `src/vl_rag_graph_rlm/utils/parsing.py` | LLM response parsing, code block extraction |
 | Utils Prompts | `src/vl_rag_graph_rlm/utils/prompts.py` | Additional prompt utilities |
-| Pipeline | `src/vl_rag_graph_rlm/pipeline.py` | `MultimodalRAGPipeline` unified API |
+| Pipeline | `src/vl_rag_graph_rlm/pipeline.py` | `MultimodalRAGPipeline` unified API (lazy `@property` model loading) |
 | Vision | `src/vl_rag_graph_rlm/vision.py` | Image encoding, multimodal message formatting |
 | Clients | `src/vl_rag_graph_rlm/clients/` | Provider clients (OpenAI-compatible, Anthropic, Gemini, LiteLLM) |
 | RAG Init | `src/vl_rag_graph_rlm/rag/__init__.py` | `SearchResult`, `RRF`, `MultiFactorReranker`, `HybridSearcher` |
@@ -164,8 +250,12 @@ is persisted to `knowledge_graph.md` and merged across runs.
 | RAG Store | `src/vl_rag_graph_rlm/rag/store.py` | Vector store base module |
 | RAG Reranker | `src/vl_rag_graph_rlm/rag/reranker.py` | Reranker implementations |
 | Qwen3-VL | `src/vl_rag_graph_rlm/rag/qwen3vl.py` | `Qwen3VLEmbeddingProvider`, `Qwen3VLRerankerProvider` |
+| Text Embedding | `src/vl_rag_graph_rlm/rag/text_embedding.py` | `TextOnlyEmbeddingProvider` — lightweight text-only embeddings |
+| API Embedding | `src/vl_rag_graph_rlm/rag/api_embedding.py` | `APIEmbeddingProvider` — OpenRouter + ZenMux omni |
+| FlashRank | `src/vl_rag_graph_rlm/rag/flashrank_reranker.py` | `FlashRankRerankerProvider` — lightweight ONNX reranker |
 | ERNIE Client | `src/vl_rag_graph_rlm/rag/ernie_client.py` | Baidu ERNIE / OpenAI-compatible client |
-| Vector Store | `src/vl_rag_graph_rlm/rag/multimodal_store.py` | `MultimodalVectorStore` with text + image storage |
+| Vector Store | `src/vl_rag_graph_rlm/rag/multimodal_store.py` | `MultimodalVectorStore` with text + image + video + audio storage |
+| Parakeet | `src/vl_rag_graph_rlm/rag/parakeet.py` | `ParakeetTranscriptionProvider` — lazy-loaded audio transcription via NeMo |
 | Collections | `src/vl_rag_graph_rlm/collections.py` | Named persistent knowledge stores (CRUD, KG helpers) |
 | Environments REPL | `src/vl_rag_graph_rlm/environments/repl.py` | Alternative safe Python execution sandbox |
 | CLI | `src/vrlmrag.py` | Unified `--provider <name>` CLI for all 17 providers |
@@ -208,18 +298,25 @@ google-generativeai           # Gemini API client
 python-dotenv                 # .env file loading
 python-pptx                   # PowerPoint processing
 Pillow                        # Image handling
+ffmpeg (system)               # Video frame extraction (RAM-safe, replaces torchvision video reader)
+
+# Optional: Audio transcription
+nemo_toolkit[asr]>=2.0.0     # pip install "vl-rag-graph-rlm[parakeet]"
 ```
 
 ## Full Pipeline Flow (Template Pattern)
 
-Every provider template follows this pattern:
+Every provider template follows this pattern. Note the **sequential model
+loading** — the embedder is freed before the reranker loads.
 
 ```python
+import gc, torch
+
 # 1. Document Processing
 processor = DocumentProcessor()
 documents = processor.process_path(input_path)
 
-# 2. Qwen3-VL Embedding (text + images → unified vector space)
+# 2. Qwen3-VL Embedding (text + images + video + audio → unified vector space)
 embedder = create_qwen3vl_embedder(device="mps")
 store = MultimodalVectorStore(embedding_provider=embedder, storage_path=...)
 for chunk in chunks:
@@ -228,6 +325,15 @@ for chunk in chunks:
 for image in images:
     store.add_image(image_path=path, description=desc,
                     instruction=_DOCUMENT_INSTRUCTION)
+# Video: ffmpeg extracts frames → embeds as image list (never loads full video)
+store.add_video(video_path="talk.mp4", description="...", fps=0.1, max_frames=8)
+# Audio: transcribe → embed transcript text
+store.add_audio(audio_path="talk.wav", transcribe=True)
+
+# 2b. FREE embedder before loading reranker (sequential model loading)
+del embedder
+store.embedding_provider = None
+gc.collect(); torch.mps.empty_cache()
 
 # 3. Hybrid Search + RRF Fusion (accuracy-first: wide retrieval)
 dense_results = store.search(query, top_k=50, instruction=_QUERY_INSTRUCTION)
@@ -299,6 +405,8 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 | `--model MODEL` | `-m` | Override default model |
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
+| `--text-only` | | Use text-only embeddings (~1.2 GB RAM, skips images/videos) |
+| `--use-api` | | Use API-based embeddings (~200 MB RAM, requires internet) |
 | `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
 | `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
 | `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
@@ -327,8 +435,28 @@ PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 ZAI_CODING_PLAN=true              # Try Coding Plan first (default: true)
 NEBIUS_CONTEXT_WINDOW=128000      # Context window in tokens
 
-# Embedding models (auto-downloaded from HuggingFace)
-HF_TOKEN=...                      # Optional: for gated models
+# Embedding Mode Toggle (mutually exclusive — first match wins)
+VRLMRAG_TEXT_ONLY=false           # true = text-only embeddings (~1.2 GB RAM)
+VRLMRAG_USE_API=false             # true = API embeddings (~200 MB RAM, requires internet)
+                                  # both false = multimodal embeddings (~4.6 GB RAM)
+
+# Model Configuration (all overridable via env vars)
+VRLMRAG_TEXT_ONLY_MODEL=Qwen/Qwen3-Embedding-0.6B     # Text-only embedding model
+VRLMRAG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B  # Multimodal embedding model
+VRLMRAG_RERANKER_MODEL=ms-marco-MiniLM-L-12-v2       # FlashRank reranker model
+VRLMRAG_EMBEDDING_MODEL=openai/text-embedding-3-small  # API embedding model (OpenRouter)
+VRLMRAG_VLM_MODEL=inclusionai/ming-flash-omni-preview # API VLM model (ZenMux omni)
+
+# API Embedding Provider (when VRLMRAG_USE_API=true)
+VRLMRAG_EMBEDDING_API_KEY=...     # Optional: override OPENROUTER_API_KEY
+VRLMRAG_EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
+
+# API VLM Provider (when VRLMRAG_USE_API=true)
+VRLMRAG_VLM_API_KEY=...           # Optional: override ZENMUX_API_KEY
+VRLMRAG_VLM_BASE_URL=https://zenmux.ai/api/v1
+
+# HuggingFace token for downloading models (optional)
+HF_TOKEN=...
 ```
 
 ### Provider Hierarchy
@@ -776,7 +904,9 @@ With `VRLMRAG_COLLECTIONS=false`, the server exposes only 5 core tools instead o
 
 | Tool | Description | Key Parameters | Availability |
 |------|-------------|----------------|--------------|
-| `query_document` | Query a document/folder via full VL-RAG pipeline | `input_path`, `query`, `provider?`, `model?` | Always |
+| `query_document` | Query a document/folder via full VL-RAG pipeline (multimodal) | `input_path`, `query`, `provider?`, `model?` | Always |
+| `query_text_document` | Query a document via text-only RAG pipeline | `input_path`, `query`, `provider?`, `model?` | Always |
+| `run_text_only_cli` | Execute CLI `--text-only` command via subprocess | `input_path`, `query?`, `provider?`, `model?` | Always |
 | `analyze_document` | Run full 6-pillar analysis → markdown report | `input_path`, `query?`, `provider?`, `model?`, `output_path?` | Always |
 | `list_providers` | List providers and API key status | (none) | Always |
 | `show_hierarchy` | Show provider fallback hierarchy | (none) | Always |
@@ -789,3 +919,5 @@ With `VRLMRAG_COLLECTIONS=false`, the server exposes only 5 core tools instead o
 
 All tools with `provider?`/`model?` parameters default to the hierarchy
 system unless overridden per-call, via `mcp_settings.json`, or via `VRLMRAG_*` env vars.
+
+## Environment Variables

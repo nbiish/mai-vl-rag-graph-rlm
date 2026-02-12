@@ -203,6 +203,50 @@ class MultimodalVectorStore:
         
         return doc_id
     
+    @staticmethod
+    def _extract_frames_ffmpeg(
+        video_path: str, fps: float, max_frames: int
+    ) -> List[str]:
+        """Extract frames from video using ffmpeg (RAM-safe).
+
+        Avoids loading the entire video into memory by using ffmpeg
+        to seek and extract only the frames needed.
+
+        Args:
+            video_path: Path to video file
+            fps: Frame sampling rate (frames per second to extract)
+            max_frames: Maximum number of frames to extract
+
+        Returns:
+            List of temporary frame image paths
+        """
+        import subprocess
+        import tempfile
+
+        tmp_dir = tempfile.mkdtemp(prefix="vrlmrag_frames_")
+        out_pattern = os.path.join(tmp_dir, "frame_%04d.jpg")
+
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vf", f"fps={fps}",
+            "-frames:v", str(max_frames),
+            "-q:v", "2",
+            "-loglevel", "error",
+            out_pattern,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+
+        frames = sorted(
+            os.path.join(tmp_dir, f)
+            for f in os.listdir(tmp_dir)
+            if f.endswith(".jpg")
+        )
+        logger.info(
+            "Extracted %d frames from %s (fps=%.2f, max=%d)",
+            len(frames), video_path, fps, max_frames,
+        )
+        return frames
+
     def add_video(
         self,
         video_path: str,
@@ -214,7 +258,10 @@ class MultimodalVectorStore:
         instruction: Optional[str] = None
     ) -> str:
         """Add a video document.
-        
+
+        Uses ffmpeg to extract frames (RAM-safe) instead of loading
+        the entire video via torchvision, which can OOM on long videos.
+
         Args:
             video_path: Path to video file
             description: Optional text description
@@ -227,30 +274,38 @@ class MultimodalVectorStore:
         Returns:
             Document ID
         """
+        import shutil
+
         doc_id = doc_id or f"vid_{len(self.documents)}"
         metadata = metadata or {}
         metadata["type"] = "video"
         metadata["video_path"] = video_path
-        
-        # Generate multimodal embedding
-        if description:
-            embedding = self.embedding_provider.embed_multimodal(
-                text=description,
-                video=video_path,
-                fps=fps,
-                max_frames=max_frames,
-                instruction=instruction
-            )
-            content = description
-        else:
-            embedding = self.embedding_provider.embed_video(
-                video_path,
-                fps=fps,
-                max_frames=max_frames,
-                instruction=instruction
-            )
-            content = f"[Video: {video_path}]"
-        
+
+        # Extract frames via ffmpeg (never loads full video into RAM)
+        frames = self._extract_frames_ffmpeg(video_path, fps, max_frames)
+        metadata["frame_count"] = len(frames)
+
+        try:
+            # Pass frame list to embedder (not the raw video path)
+            if description:
+                embedding = self.embedding_provider.embed_multimodal(
+                    text=description,
+                    video=frames,
+                    instruction=instruction
+                )
+                content = description
+            else:
+                embedding = self.embedding_provider.embed_video(
+                    frames,
+                    instruction=instruction
+                )
+                content = f"[Video: {video_path}]"
+        finally:
+            # Clean up temp frames
+            if frames:
+                tmp_dir = os.path.dirname(frames[0])
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
         doc = MultimodalDocument(
             id=doc_id,
             content=content,
@@ -859,35 +914,38 @@ class MultimodalVectorStore:
 
 # Factory function
 def create_multimodal_store(
-    model_name: str = "Qwen/Qwen3-VL-Embedding-2B",
+    model_name: Optional[str] = None,
     storage_path: Optional[str] = None,
     use_reranker: bool = False,
-    reranker_model: str = "Qwen/Qwen3-VL-Reranker-2B",
+    reranker_model: Optional[str] = None,
     **model_kwargs
 ) -> MultimodalVectorStore:
     """Create a multimodal vector store with Qwen3-VL.
+
+    WARNING: Only loads the embedder. The reranker is NOT loaded here
+    to avoid having two ~4 GB models in RAM simultaneously.  Callers
+    that need reranking should load the reranker separately AFTER
+    freeing the embedder (sequential load-use-free pattern).
     
     Args:
         model_name: Embedding model name
         storage_path: Optional storage path
-        use_reranker: Whether to use reranker
-        reranker_model: Reranker model name
+        use_reranker: Whether to use reranker (stored as config, NOT loaded)
+        reranker_model: Reranker model name (stored as config, NOT loaded)
         **model_kwargs: Additional model loading kwargs
         
     Returns:
-        Configured MultimodalVectorStore
+        Configured MultimodalVectorStore (embedder only — no reranker loaded)
     """
-    from vl_rag_graph_rlm.rag.qwen3vl import create_qwen3vl_embedder, create_qwen3vl_reranker
+    import os
+    from vl_rag_graph_rlm.rag.qwen3vl import create_qwen3vl_embedder
     
-    embedder = create_qwen3vl_embedder(model_name, **model_kwargs)
-    
-    reranker = None
-    if use_reranker:
-        reranker = create_qwen3vl_reranker(reranker_model, **model_kwargs)
+    resolved_name = model_name or os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+    embedder = create_qwen3vl_embedder(resolved_name, **model_kwargs)
     
     return MultimodalVectorStore(
         embedding_provider=embedder,
         storage_path=storage_path,
-        use_qwen_reranker=use_reranker,
-        reranker_provider=reranker
+        use_qwen_reranker=False,
+        reranker_provider=None
     )

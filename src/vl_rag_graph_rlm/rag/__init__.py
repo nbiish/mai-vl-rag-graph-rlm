@@ -351,6 +351,60 @@ if HAS_QWEN3VL:
         "MultimodalDocument",
     ])
 
+# Import API-based embedding provider (requires openai SDK)
+try:
+    from vl_rag_graph_rlm.rag.api_embedding import (
+        APIEmbeddingProvider,
+        create_api_embedder,
+    )
+    HAS_API_EMBEDDING = True
+except ImportError:
+    HAS_API_EMBEDDING = False
+    APIEmbeddingProvider = None  # type: ignore
+    create_api_embedder = None  # type: ignore
+
+if HAS_API_EMBEDDING:
+    __all__.extend([
+        "APIEmbeddingProvider",
+        "create_api_embedder",
+    ])
+
+# Import FlashRank lightweight reranker (optional - requires flashrank)
+try:
+    from vl_rag_graph_rlm.rag.flashrank_reranker import (
+        FlashRankRerankerProvider,
+        create_flashrank_reranker,
+    )
+    HAS_FLASHRANK = True
+except ImportError:
+    HAS_FLASHRANK = False
+    FlashRankRerankerProvider = None  # type: ignore
+    create_flashrank_reranker = None  # type: ignore
+
+if HAS_FLASHRANK:
+    __all__.extend([
+        "FlashRankRerankerProvider",
+        "create_flashrank_reranker",
+    ])
+
+# Import text-only embedding provider (requires transformers)
+try:
+    from vl_rag_graph_rlm.rag.text_embedding import (
+        TextOnlyEmbeddingProvider,
+        create_text_embedder,
+    )
+    HAS_TEXT_EMBEDDING = True
+except ImportError:
+    HAS_TEXT_EMBEDDING = False
+    TextOnlyEmbeddingProvider = None  # type: ignore
+    create_text_embedder = None  # type: ignore
+
+if HAS_TEXT_EMBEDDING:
+    __all__.extend([
+        "TextOnlyEmbeddingProvider",
+        "create_text_embedder",
+    ])
+
 # Import Parakeet transcription (optional - requires nemo_toolkit[asr])
 try:
     from vl_rag_graph_rlm.rag.parakeet import (

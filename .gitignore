@@ -1,4 +1,5 @@
 # AINISH Coder Tooling Distribution - Git Ignore Patterns
+# PlatformIO ignore patterns
 
 # ai pair programmer files
 .cursor/
@@ -13,7 +14,12 @@
 .windsurf/
 .aider*
 .trae/
-docs/
+
+# PlatformIO ignore patterns
+.pio*
+.pio/
+*.pioenvs/
+pio.ini
 
 # Environment and configuration files
 .env
@@ -107,11 +113,15 @@ npm-debug.log
 yarn-error.log
 .pnpm-debug.log
 
-# VL-RAG-Graph-RLM local stores
-.vrlmrag_store/
-.vrlmrag/
-!.vrlmrag/mcp_settings.json
-
 # Security reports
 SECURITY_REPORT.md
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Project-specific patterns (preserved from existing .gitignore)
+# ═══════════════════════════════════════════════════════════════════════════
+
+!.vrlmrag/mcp_settings.json
+.vrlmrag_store/
+.vrlmrag/
+docs/
 

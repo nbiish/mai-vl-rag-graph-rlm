@@ -1,17 +1,17 @@
 # VL-RAG-Graph-RLM
 
-**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Features **named persistent collections** for building scriptable knowledge bases, **MCP server integration** for AI assistants, **accuracy-first retrieval** with widened parameters, and **universal persistent embeddings** with SHA-256 deduplication.
+**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
 
 ## The Six Pillars
 
-| # | Pillar | Component | Cost |
-|---|--------|-----------|------|
-| 1 | **VL** | Qwen3-VL-Embedding-2B — unified text + image embeddings | FREE (local) |
-| 2 | **RAG** | Hybrid search (dense cosine + keyword) with RRF fusion | FREE (local) |
-| 3 | **Reranker** | Qwen3-VL-Reranker-2B — cross-attention relevance scoring | FREE (local) |
-| 4 | **Graph** | Knowledge graph extraction via RLM | LLM cost |
-| 5 | **RLM** | Recursive Language Model with sandboxed REPL | LLM cost |
-| 6 | **Report** | Markdown report with sources, scores, and metadata | FREE |
+| # | Pillar | Component | Cost | Modes |
+|---|--------|-----------|------|-------|
+| 1 | **VL** | Qwen3-VL-Embedding-2B (multimodal) or Qwen3-Embedding-0.6B (text-only) | FREE (local) | 3 modes: text-only (~1.2 GB), API (~200 MB), multimodal (~4.6 GB) |
+| 2 | **RAG** | Hybrid search (dense cosine + keyword) with RRF fusion | FREE (local) | All modes |
+| 3 | **Reranker** | FlashRank ONNX cross-encoder (~34 MB) | FREE (local) | All modes |
+| 4 | **Graph** | Knowledge graph extraction via RLM | LLM cost | All modes |
+| 5 | **RLM** | Recursive Language Model with sandboxed REPL | LLM cost | All modes |
+| 6 | **Report** | Markdown report with sources, scores, and metadata | FREE | All modes |
 
 ## Installation
 
@@ -25,6 +25,9 @@ uv pip install -e .
 
 # Install with Qwen3-VL multimodal support
 uv pip install -e ".[qwen3vl]"
+
+# Install with audio transcription (NVIDIA Parakeet V3)
+uv pip install -e ".[parakeet]"
 
 # Install everything
 uv pip install -e ".[all]"
@@ -60,16 +63,29 @@ Set `VRLMRAG_COLLECTIONS: "false"` to hide collection tools and reduce token con
 
 ## Quick Start
 
+## Three Embedding Modes
+
+| Mode | Flag | RAM | Network | Best For |
+|------|------|-----|---------|----------|
+| **Text-Only** | `--text-only` | ~1.2 GB | Offline | `.txt`, `.md`, text-heavy PDFs |
+| **API** | `--use-api` | ~200 MB | Required | Any content, low-RAM machines |
+| **Multimodal** (default) | (none) | ~4.6 GB | Offline | PowerPoints, PDFs with figures, images, video |
+
 ### CLI
 
 ```bash
 # Set your API key
 export SAMBANOVA_API_KEY=your_key_here
 
-# Process a PowerPoint presentation
-vrlmrag --provider sambanova presentation.pptx
+# Text-Only Mode (~1.2 GB RAM, fastest, fully offline)
+vrlmrag --text-only ./docs -q "Summarize these documents"
+vrlmrag --text-only paper.md -q "What are the key findings?"
 
-# Process with custom query and save report
+# API Mode (~200 MB RAM, requires internet)
+vrlmrag --use-api ./docs -q "Analyze this content"
+
+# Multimodal Mode (default, ~4.6 GB RAM) — PowerPoints, PDFs with images
+vrlmrag --provider sambanova presentation.pptx
 vrlmrag --provider nebius document.pptx -q "Summarize key findings" -o report.md
 
 # Override model and tune recursion
@@ -193,13 +209,24 @@ Every query against a collection goes through the full 6-pillar pipeline: Qwen3-
 ```python
 from vl_rag_graph_rlm import create_pipeline
 
+# Pipeline init is instant (~207 MB) — models load lazily on first use
 pipeline = create_pipeline(
     llm_provider="sambanova",
     embedding_model="Qwen/Qwen3-VL-Embedding-2B",
     use_reranker=True,
 )
 
+# Documents (embedder loads on first add)
 pipeline.add_pptx("presentation.pptx", extract_images=True)
+
+# Video: ffmpeg extracts frames (RAM-safe, never loads full video)
+pipeline.add_video("talk.mp4", description="Conference talk", fps=0.1, max_frames=8)
+
+# Audio: transcribe with Parakeet V3 → embed transcript text
+# Requires: pip install "vl-rag-graph-rlm[parakeet]"
+pipeline.add_audio("recording.wav", transcribe=True)
+
+# Query (reranker loads on first query, embedder freed automatically)
 result = pipeline.query("What are the main topics covered?")
 print(result.answer)
 ```
@@ -285,9 +312,10 @@ To upgrade SambaNova limits, consider the Developer tier (12K RPD, no TPD limit)
 usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
                [--provider NAME] [--query QUERY] [--output OUTPUT]
                [--model MODEL] [--max-depth N] [--max-iterations N]
-               [--interactive] [--store-dir DIR] [--collection NAME]
-               [--add PATH] [--collection-list] [--collection-info]
-               [--collection-delete] [--collection-description TEXT] [PATH]
+               [--text-only] [--use-api] [--interactive] [--store-dir DIR]
+               [--collection NAME] [--add PATH] [--collection-list]
+               [--collection-info] [--collection-delete]
+               [--collection-description TEXT] [PATH]
 ```
 
 | Flag | Short | Description |
@@ -299,6 +327,8 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
 | `--model MODEL` | `-m` | Override default model |
 | `--max-depth N` | | RLM recursion depth (default: 3) |
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
+| `--text-only` | | Text-only embeddings (~1.2 GB RAM, skips images) |
+| `--use-api` | | API-based embeddings (~200 MB RAM, requires internet) |
 | `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
 | `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
 | `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
@@ -359,6 +389,18 @@ PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 {PROVIDER}_MODEL=model-name           # optional
 {PROVIDER}_RECURSIVE_MODEL=model-name  # optional (for recursive calls)
 {PROVIDER}_FALLBACK_MODEL=model-name   # optional (auto-retry on error)
+
+# Embedding Mode Toggle (mutually exclusive — first match wins)
+VRLMRAG_TEXT_ONLY=false           # true = text-only (~1.2 GB, offline)
+VRLMRAG_USE_API=false             # true = API-based (~200 MB, requires internet)
+                                  # both false = multimodal (~4.6 GB, offline)
+
+# Model Configuration (all externalized to env vars)
+VRLMRAG_TEXT_ONLY_MODEL=Qwen/Qwen3-Embedding-0.6B      # Text-only embedding
+VRLMRAG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B  # Multimodal embedding
+VRLMRAG_RERANKER_MODEL=ms-marco-MiniLM-L-12-v2      # FlashRank reranker
+VRLMRAG_EMBEDDING_MODEL=openai/text-embedding-3-small  # API embedding (OpenRouter)
+VRLMRAG_VLM_MODEL=inclusionai/ming-flash-omni-preview # API VLM (ZenMux)
 
 # MCP Server configuration (per-client via mcp_config.json env block)
 VRLMRAG_ROOT=/path/to/repo              # Required: finds .env file

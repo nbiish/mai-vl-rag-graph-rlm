@@ -28,6 +28,10 @@ Example:
 """
 
 import os
+
+# Env-var-backed model defaults (overridable in .env)
+_DEFAULT_EMBEDDING_MODEL = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+_DEFAULT_RERANKER_MODEL = os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2")
 import logging
 from typing import List, Dict, Any, Optional, Union, Callable
 from dataclasses import dataclass, field
@@ -101,13 +105,15 @@ class MultimodalRAGPipeline:
         recursive_model: Optional[str] = None,
         llm_api_key: Optional[str] = None,
         # Embedding Configuration
-        embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B",
+        embedding_model: str = _DEFAULT_EMBEDDING_MODEL,
         embedding_device: Optional[str] = None,
         # Transcription Configuration
         transcription_provider: Optional[Any] = None,
         # Reranker Configuration
         use_reranker: bool = True,
-        reranker_model: str = "Qwen/Qwen3-VL-Reranker-2B",
+        reranker_model: str = _DEFAULT_RERANKER_MODEL,
+        # API mode
+        use_api: bool = False,
         # Search Configuration
         top_k: int = 10,
         rerank_top_k: int = 100,
@@ -137,8 +143,8 @@ class MultimodalRAGPipeline:
             embedding_model: Qwen3-VL embedding model name
             embedding_device: Device for embeddings (cuda/cpu/mps)
             transcription_provider: Optional audio transcription provider (e.g., Parakeet)
-            use_reranker: Whether to use Qwen3-VL reranker
-            reranker_model: Qwen3-VL reranker model name
+            use_reranker: Whether to use FlashRank lightweight reranker
+            reranker_model: FlashRank reranker model name
             top_k: Number of final results to retrieve
             rerank_top_k: Number of results to rerank
             use_hybrid_search: Whether to combine dense + keyword search
@@ -163,6 +169,7 @@ class MultimodalRAGPipeline:
         self._use_reranker = use_reranker
         self._reranker_model = reranker_model
         self._transcription_provider = transcription_provider
+        self._use_api = use_api
         self._storage_path = storage_path
         
         # LLM config (stored, not initialized)
@@ -179,6 +186,7 @@ class MultimodalRAGPipeline:
         self._reranker = None
         self._store = None
         self._rlm = None
+        self._lock_ctx = None  # cross-process local model lock context
         
         # Search configuration
         self.top_k = top_k
@@ -200,24 +208,62 @@ class MultimodalRAGPipeline:
     
     @property
     def embedding_provider(self):
-        """Lazy-load embedding model on first access."""
+        """Lazy-load embedding model on first access.
+
+        When ``use_api=True``, uses the API-based embedding provider
+        (OpenRouter + ZenMux omni) with zero local GPU models.
+
+        Local models acquire the cross-process lock to ensure only one
+        model is loaded in RAM at a time (across all CLI/MCP sessions).
+        API-based embeddings bypass the lock entirely.
+        """
         if self._embedding_provider is None:
-            logger.info(f"Loading embedding model: {self._embedding_model}")
-            self._embedding_provider = create_qwen3vl_embedder(
-                model_name=self._embedding_model,
-                device=self._embedding_device
-            )
+            if self._use_api:
+                try:
+                    from vl_rag_graph_rlm.rag.api_embedding import create_api_embedder
+                    logger.info("Loading API-based embedding provider")
+                    self._embedding_provider = create_api_embedder()
+                except ImportError:
+                    logger.warning("openai SDK not installed for API mode; falling back to local")
+                    from vl_rag_graph_rlm.local_model_lock import local_model_lock
+                    self._lock_ctx = local_model_lock(
+                        self._embedding_model, description="Pipeline embedding (API fallback)",
+                    )
+                    self._lock_ctx.__enter__()
+                    self._embedding_provider = create_qwen3vl_embedder(
+                        model_name=self._embedding_model,
+                        device=self._embedding_device
+                    )
+            else:
+                from vl_rag_graph_rlm.local_model_lock import local_model_lock
+                self._lock_ctx = local_model_lock(
+                    self._embedding_model, description="Pipeline embedding",
+                )
+                self._lock_ctx.__enter__()
+                logger.info(f"Loading embedding model: {self._embedding_model}")
+                self._embedding_provider = create_qwen3vl_embedder(
+                    model_name=self._embedding_model,
+                    device=self._embedding_device
+                )
         return self._embedding_provider
     
     @property
     def reranker(self):
-        """Lazy-load reranker model on first access."""
+        """Lazy-load FlashRank lightweight reranker on first access.
+
+        FlashRank uses ONNX cross-encoders (~34 MB) and coexists
+        with the Qwen3-VL embedder without RAM pressure.
+        """
         if self._reranker is None and self._use_reranker:
-            logger.info(f"Loading reranker model: {self._reranker_model}")
-            self._reranker = create_qwen3vl_reranker(
-                model_name=self._reranker_model,
-                device=self._embedding_device
-            )
+            try:
+                from vl_rag_graph_rlm.rag.flashrank_reranker import create_flashrank_reranker
+                logger.info(f"Loading FlashRank reranker: {self._reranker_model}")
+                self._reranker = create_flashrank_reranker(
+                    model_name=self._reranker_model,
+                )
+            except ImportError:
+                logger.warning("FlashRank not installed — reranking disabled. pip install flashrank")
+                self._use_reranker = False
         return self._reranker
     
     @property
@@ -231,7 +277,7 @@ class MultimodalRAGPipeline:
             self._store = MultimodalVectorStore(
                 embedding_provider=self.embedding_provider,
                 storage_path=self._storage_path,
-                use_qwen_reranker=False,  # Don't trigger reranker load yet
+                use_qwen_reranker=False,
                 reranker_provider=None,
                 transcription_provider=self._transcription_provider
             )
@@ -243,6 +289,17 @@ class MultimodalRAGPipeline:
             self.store.use_qwen_reranker = True
             self.store.reranker = self.reranker
     
+    def release_lock(self) -> None:
+        """Release the cross-process local model lock if held.
+
+        Call this after embedding is complete and before long-running
+        API-based operations (RLM queries) to free the lock for other
+        processes.  Safe to call multiple times or when no lock is held.
+        """
+        if self._lock_ctx is not None:
+            self._lock_ctx.__exit__(None, None, None)
+            self._lock_ctx = None
+
     @property
     def rlm(self):
         """Lazy-load RLM on first access."""
@@ -937,7 +994,7 @@ class MultimodalRAGPipeline:
 def create_pipeline(
     llm_provider: str = "openrouter",
     llm_model: Optional[str] = None,
-    embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B",
+    embedding_model: str = _DEFAULT_EMBEDDING_MODEL,
     use_reranker: bool = True,
     storage_path: Optional[str] = None,
     **kwargs

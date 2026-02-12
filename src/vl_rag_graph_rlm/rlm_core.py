@@ -55,7 +55,7 @@ def _get_default_model(provider: str) -> str:
         "fireworks": "accounts/fireworks/models/llama-v3p1-70b-instruct",
         "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
         "deepseek": "deepseek-chat",
-        "sambanova": "DeepSeek-V3.2",  # DeepSeek V3.2 on SambaNova (200+ tok/sec, 128K context)
+        "sambanova": "DeepSeek-V3-0324",  # DeepSeek V3 on SambaNova (32K+ context, production)
         "nebius": "MiniMaxAI/MiniMax-M2.1",  # MiniMax M2.1 on Nebius Token Factory
         "cerebras": "zai-glm-4.7",  # GLM 4.7 355B on Cerebras wafer-scale (~1000 tok/s)
     }
