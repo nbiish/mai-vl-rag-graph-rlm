@@ -34,6 +34,30 @@
 
 **Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
 
+## What's New (Feb 12, 2026)
+
+### 🎬 Video Processing with Safeguards
+- **ZenMux Ming-flash-omni-preview** as primary VLM for video frame description
+- **OpenRouter Kimi K2.5** as automatic fallback when ZenMux fails
+- **Circuit breaker pattern** — VLM disabled after 3 consecutive failures
+- **Critical safety wrapper** — `_process_media()` wrapped in try-except to prevent system crashes
+- **API-default mode** — Video/audio always forces API mode (local models blocked)
+
+### 📊 Model Documentation
+- **MODELS.md** — Comprehensive model catalog with 342 OpenRouter + 100 ZenMux models
+- **Sorted by release date** — Always know which models are newest
+- **Pricing and capabilities** — Cost per token, context windows, multimodal support
+
+### 🔧 Provider Hierarchy Improvements
+- **Tested complete failure scenarios** — All providers failing → graceful error message
+- **7/15 providers ready** — SambaNova, Nebius, Groq, Cerebras, z.ai, ZenMux, OpenRouter
+- **DeepSeek-V3 context fix** — V3.2 (8K) → V3-0324 (32K) with V3.1 fallback
+
+### 🛡️ Safety & Reliability
+- **API embedding timeouts** — 30s for embeddings, 60s for VLM operations
+- **VLM fallback chain** — ZenMux omni → Kimi K2.5 → circuit breaker disable
+- **Media safety block** — Video/audio files cannot be processed with local models
+
 ## The Six Pillars
 
 | # | Pillar | Component | Cost | Modes |
