@@ -73,8 +73,15 @@ def collection_exists(name: str) -> bool:
 def create_collection(
     name: str,
     description: str = "",
+    embedding_model: str = "",
 ) -> Dict[str, Any]:
-    """Create a new empty collection (or return existing metadata)."""
+    """Create a new empty collection (or return existing metadata).
+    
+    Args:
+        name: Collection name (will be sanitized to filesystem-safe slug)
+        description: Optional description of the collection
+        embedding_model: Name of the embedding model used (e.g., "Qwen/Qwen3-VL-Embedding-2B")
+    """
     slug = _sanitize_name(name)
     cdir = _collection_dir(slug)
     meta_file = cdir / "collection.json"
@@ -93,6 +100,8 @@ def create_collection(
         "sources": [],
         "document_count": 0,
         "chunk_count": 0,
+        "embedding_model": embedding_model,  # Track embedding model version
+        "model_history": [],  # Track model changes over time
     }
     meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
@@ -136,20 +145,94 @@ def delete_collection(name: str) -> bool:
     return False
 
 
-def record_source(name: str, source_path: str, doc_count: int, chunk_count: int) -> None:
-    """Record that documents from *source_path* were added to the collection."""
+def record_source(
+    name: str, 
+    source_path: str, 
+    doc_count: int, 
+    chunk_count: int,
+    embedding_model: str = "",
+    reranker_model: str = "",
+) -> None:
+    """Record that documents from *source_path* were added to the collection.
+    
+    Args:
+        name: Collection name
+        source_path: Path to the source documents
+        doc_count: Number of documents added
+        chunk_count: Number of chunks added
+        embedding_model: Name of the embedding model used (e.g., "Qwen/Qwen3-VL-Embedding-2B")
+        reranker_model: Name of the reranker model used (e.g., "ms-marco-MiniLM-L-12-v2")
+    """
     meta = load_collection_meta(name)
+    
+    # Check if embedding model has changed
+    prev_model = meta.get("embedding_model", "")
+    if embedding_model and embedding_model != prev_model and prev_model:
+        # Record model change in history
+        if "model_history" not in meta:
+            meta["model_history"] = []
+        meta["model_history"].append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "previous_model": prev_model,
+            "new_model": embedding_model,
+            "source": str(Path(source_path).resolve()),
+        })
+        # Update current model
+        meta["embedding_model"] = embedding_model
+    elif embedding_model and not prev_model:
+        # First time setting model
+        meta["embedding_model"] = embedding_model
+    
+    # Track reranker model too
+    if reranker_model:
+        meta["reranker_model"] = reranker_model
+    
     meta["sources"].append(
         {
             "path": str(Path(source_path).resolve()),
             "added": datetime.now(timezone.utc).isoformat(),
             "documents": doc_count,
             "chunks": chunk_count,
+            "embedding_model": embedding_model,  # Track per-source model
         }
     )
     meta["document_count"] = meta.get("document_count", 0) + doc_count
     meta["chunk_count"] = meta.get("chunk_count", 0) + chunk_count
     save_collection_meta(name, meta)
+
+
+def check_model_compatibility(name: str, target_model: str) -> Dict[str, Any]:
+    """Check if collection can be safely used with target embedding model.
+    
+    Returns:
+        Dict with compatibility info:
+        - compatible: bool (True if same model or no model set)
+        - current_model: str (the model currently used by collection)
+        - target_model: str (the model being checked)
+        - needs_reindex: bool (True if reindexing is recommended)
+        - mixed_models: bool (True if collection has mixed model sources)
+        - history: list of model changes
+    """
+    meta = load_collection_meta(name)
+    current_model = meta.get("embedding_model", "")
+    model_history = meta.get("model_history", [])
+    
+    # Check if any sources used different models
+    sources = meta.get("sources", [])
+    source_models = set(s.get("embedding_model", "") for s in sources if s.get("embedding_model"))
+    mixed_models = len(source_models) > 1
+    
+    compatible = not current_model or current_model == target_model
+    
+    return {
+        "compatible": compatible,
+        "current_model": current_model,
+        "target_model": target_model,
+        "needs_reindex": not compatible,
+        "mixed_models": mixed_models,
+        "source_models": sorted(source_models),
+        "history": model_history,
+    }
 
 
 # ── Knowledge-graph helpers ────────────────────────────────────────────

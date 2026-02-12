@@ -7,6 +7,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-12
+
+### Model Upgrade Workflows
+- **`--reindex` CLI flag** — Force re-embedding of all documents with current embedding model
+  - Works with regular input paths and collections (`-c <name> --reindex`)
+  - Clears existing embeddings, re-processes all source documents
+  - Useful when upgrading to a new embedding model or repairing corrupted indices
+- **`--rebuild-kg` CLI flag** — Regenerate knowledge graph with current RLM model
+  - Works with regular input paths and collections (`-c <name> --rebuild-kg`)
+  - Clears existing KG, re-extracts entities/relationships from all documents
+  - Uses current provider hierarchy for RLM calls
+- **`--model-compare` CLI flag** — Compare embeddings between old and new models
+  - Runs query with both old model and current model
+  - Shows unified diff of responses
+  - Reports response length differences and divergence
+- **`--check-model` CLI flag** — Check collection compatibility with target embedding model
+  - Reports current model, target model, compatibility status
+  - Warns if collection has mixed models from different sources
+  - Suggests reindex command if needed
+- **`collection_reindex` MCP tool** — Reindex a collection via MCP server
+  - Clears embeddings, re-adds all recorded sources
+  - Returns summary: cleared files, re-added sources, current doc/chunk counts
+- **`collection_rebuild_kg` MCP tool** — Rebuild KG for a collection via MCP server
+  - Clears knowledge graph, re-processes all sources with current RLM
+  - Returns summary: previous KG existed, re-processed sources, new KG size
+- **Automatic model version tracking in collection metadata**
+  - `embedding_model` field tracks current embedding model for collection
+  - `reranker_model` field tracks reranker model
+  - `model_history` array tracks all model changes over time
+  - Per-source model tracking in `sources[].embedding_model`
+- **`check_model_compatibility()` helper** — Check if collection can use target model
+  - Returns compatibility info: current_model, target_model, needs_reindex, mixed_models
+  - Detects mixed model collections (sources embedded with different models)
+- **Collection info shows model details**
+  - `vrlmrag -c <name> --collection-info` now displays embedding model
+  - Shows model change history (last 5 changes)
+  - Warns if collection has mixed embedding models
+- **`--quality-check` CLI flag** — RLM-powered embedding quality assessment
+  - Analyzes collection metadata and knowledge graph
+  - Uses recursive LLM to evaluate retrieval quality
+  - Provides quality score (0-100), strengths, weaknesses, recommendations
+  - Detects score in RLM response and shows status (Excellent/Good/Fair/Poor)
+- **Collection tools now total 7** — `collection_add`, `collection_query`, `collection_list`, `collection_info`, `collection_delete`, `collection_reindex`, `collection_rebuild_kg`
+
+### RLM Architecture Verified
+- **True Recursive Language Model implementation confirmed** — VLRAGGraphRLM matches Alex Zhang & Omar Khattab (MIT 2025) specification:
+  - **REPL environment** — `REPLExecutor` with RestrictedPython sandbox (`environments/repl.py`)
+  - **Context as variable** — Large context stored as Python variable, NOT fed to neural network
+  - **`recursive_llm()` function** — Injected into REPL env for spawning sub-RLM calls (`rlm_core.py:376`)
+  - **`FINAL()` / `FINAL_VAR()` parsing** — `find_final_answer()` extracts answers from RLM responses (`utils/parsing.py:28-60`)
+  - **True recursive calls** — Child `VLRAGGraphRLM` at depth+1 with cheaper model (`rlm_core.py:389-400`)
+  - **Infinite context capability** — Root LM only sees query, uses code to explore context programmatically
+- **System prompt** — "You cannot see the context directly. You MUST write Python code to search and explore it" (`core/prompts.py:19-20`)
+
+### API-Default Mode & Safety
+- **CLI defaults to API mode** — Local Qwen3-VL requires explicit `--local` flag or `VRLMRAG_LOCAL=true`
+- **Media safety block** — Video/audio files force API mode regardless of `--local` flag (prevents OOM crashes)
+- **`--offline` mode** — Graceful fallback when APIs unavailable (blocks video/audio for safety)
+- **MCP server defaults to API mode** — `use_api: bool = True` in MCPSettings
+
+### Files Changed
+- `src/vrlmrag.py` — `--reindex`, `--rebuild-kg`, `--model-compare`, `--offline` flags, collection-level operations
+- `src/vl_rag_graph_rlm/mcp_server/server.py` — `collection_reindex`, `collection_rebuild_kg` MCP tools
+- `llms.txt/TODO.md` — Updated roadmap with completed model upgrade workflows
+- `llms.txt/CHANGELOG.md` — This entry
+
 ## [0.1.4] - 2026-02-11
 
 ### Text-Only Embedding Mode (Lightweight Local RAG)

@@ -85,30 +85,62 @@
 ### Model Upgrade Workflows (v0.2.0)
 - [x] `--reindex` CLI flag — force re-embedding of all documents with current model
 - [x] `--rebuild-kg` CLI flag — regenerate knowledge graph with current RLM
-- [ ] `--model-compare` CLI flag — compare embeddings between old and new models
-- [ ] `reindex_collection` MCP tool — reindex a collection with new embedding model
-- [ ] `rebuild_kg_collection` MCP tool — regenerate KG for a collection
-- [ ] Automatic model version tracking in collection metadata
-- [ ] Embedding model migration helpers (convert old → new format)
-- [ ] RLM-powered embedding quality assessment — use recursive LLM to evaluate retrieval quality
+- [x] `collection_reindex` MCP tool — reindex a collection with new embedding model
+- [x] `collection_rebuild_kg` MCP tool — regenerate KG for a collection
+- [x] `--model-compare` CLI flag — compare embeddings between old and new models
+- [x] `--check-model` CLI flag — check collection compatibility with target model
+- [x] Automatic model version tracking in collection metadata
+- [x] Embedding model migration helpers (convert old → new format)
+- [x] RLM-powered embedding quality assessment — use recursive LLM to evaluate retrieval quality
 
 ### Document Processing
-- [ ] PDF text extraction via PyMuPDF (`pymupdf`)
-- [ ] PDF image extraction (figures, charts, diagrams)
-- [ ] DOCX document processing support
-- [ ] CSV / Excel tabular data ingestion
-- [ ] Chunking strategy: sliding window with overlap (configurable chunk_size, overlap)
+- [x] **PDF support via PyMuPDF** — Text and image extraction from PDFs
+  - Extracts text per-page with page number metadata
+  - Extracts embedded images (figures, charts, diagrams) for local Qwen3-VL embedding
+  - Graceful fallback if PyMuPDF not installed
+- [x] DOCX document processing support
+- [x] CSV / Excel tabular data ingestion
+- [x] **Chunking strategy: sliding window with overlap** — Configurable via `--chunk-size` and `--chunk-overlap` CLI flags
+  - Default: 1000 chars per chunk, 200 char overlap
+  - Smart boundary detection at sentence/word breaks
+  - Applied to text documents (TXT, MD) for better context preservation
 
 ### RAG Improvements
-- [ ] BM25 keyword search (replace simple token-overlap with rank-bm25)
-- [ ] Persistent vector store with SQLite backend (replace JSON)
-- [ ] Configurable RRF weights via CLI flags
-- [ ] Multi-query retrieval (generate sub-queries for broader recall)
+- [x] **BM25 keyword search** — Replaced simple token-overlap with BM25 algorithm
+  - Uses `rank-bm25` library for state-of-the-art keyword retrieval
+  - Automatic fallback to simple overlap if library not installed
+  - Better term frequency and document length normalization
+- [x] **Persistent vector store with SQLite backend** — Alternative to JSON storage
+  - `--use-sqlite` CLI flag enables SQLite backend
+  - Better performance with large collections
+  - Transaction safety and concurrent read access
+  - Automatic table creation with proper indexing
+- [x] **Configurable RRF weights** — `--rrf-dense-weight` and `--rrf-keyword-weight` CLI flags
+  - Control balance between dense (embedding) and keyword (BM25) search
+  - Default: 4.0 for dense, 1.0 for keyword
+  - Allows tuning for different document types and query styles
+- [x] **Multi-query retrieval** — Generate sub-queries for broader recall
+  - Uses RLM to generate 2-3 complementary sub-queries from original query
+  - Covers different aspects, keywords, and interpretations
+  - Automatically deduplicates generated queries
+  - Activated with `--multi-query` CLI flag
 
 ### Knowledge Graph
-- [ ] Structured graph output (NetworkX serialization)
-- [ ] Graph visualization (Mermaid / Graphviz export)
-- [ ] Entity deduplication and coreference resolution
+- [x] **Structured graph output (NetworkX serialization)** — Export KG as NetworkX graph
+  - `export_to_networkx()` function creates DiGraph from KG markdown
+  - Preserves entity types as node attributes
+  - Stores relationship types as edge attributes
+- [x] **Graph visualization (Mermaid / Graphviz export)** — Visual diagram export
+  - `--export-graph PATH` CLI flag exports to file
+  - `--graph-format` supports: mermaid (default), graphviz (DOT), networkx
+  - `--graph-stats` shows entity counts, relationship stats, type distribution
+  - Color-codes entities by type in visualizations
+- [x] **Entity deduplication and coreference resolution** — Clean up duplicate entities
+  - Fuzzy string matching (similarity threshold: 0.85 default)
+  - `--deduplicate-kg` applies merges to collection/file
+  - `--dedup-report` previews what would be merged
+  - `--dedup-threshold` adjusts sensitivity (0-1 range)
+  - Handles "The Company Inc." vs "Company" normalization
 - [ ] Graph-augmented retrieval (traverse graph edges for context expansion)
 
 ### Collection Enhancements

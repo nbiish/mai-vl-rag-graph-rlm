@@ -238,6 +238,14 @@ class DocumentProcessor:
 
         if ext == ".pptx" and HAS_PPTX:
             return self._process_pptx(file_path)
+        elif ext == ".pdf":
+            return self._process_pdf(file_path)
+        elif ext == ".docx":
+            return self._process_docx(file_path)
+        elif ext == ".csv":
+            return self._process_csv(file_path)
+        elif ext in {".xlsx", ".xls"}:
+            return self._process_excel(file_path)
         elif ext in {".txt", ".md"}:
             return self._process_text(file_path)
         elif ext in _MEDIA_EXTENSIONS:
@@ -356,6 +364,234 @@ class DocumentProcessor:
                 for chunk in chunks
                 if chunk.strip()
             ],
+        }
+
+    def _process_pdf(self, file_path: Path) -> dict:
+        """Extract text and images from PDF using PyMuPDF (fitz)."""
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            return {
+                "type": "pdf",
+                "path": str(file_path),
+                "content": f"[PDF: {file_path.name} — PyMuPDF not installed. Install with: pip install pymupdf]",
+                "chunks": [],
+                "page_count": 0,
+                "image_count": 0,
+            }
+
+        doc = fitz.open(file_path)
+        all_text = []
+        chunks = []
+        image_data = []
+        image_count = 0
+
+        for page_num, page in enumerate(doc, 1):
+            # Extract text
+            text = page.get_text()
+            if text.strip():
+                all_text.append(f"PAGE {page_num}:\n{text.strip()}")
+                chunks.append({
+                    "content": text.strip(),
+                    "type": "text",
+                    "page": page_num,
+                })
+
+            # Extract images (figures, charts, diagrams)
+            if not self.use_api:  # Only extract images for local processing
+                try:
+                    image_list = page.get_images(full=True)
+                    for img_index, img in enumerate(image_list, 1):
+                        try:
+                            xref = img[0]
+                            base_image = doc.extract_image(xref)
+                            image_bytes = base_image["image"]
+                            image_ext = base_image["ext"]
+                            img_filename = f"page_{page_num}_img_{img_index}.{image_ext}"
+                            
+                            image_data.append({
+                                "page": page_num,
+                                "filename": img_filename,
+                                "blob": image_bytes,
+                                "ext": image_ext,
+                            })
+                            image_count += 1
+                        except Exception:
+                            pass  # Skip problematic images
+                except Exception:
+                    pass  # Skip image extraction for this page
+
+        doc.close()
+
+        return {
+            "type": "pdf",
+            "path": str(file_path),
+            "content": "\n\n".join(all_text),
+            "chunks": chunks,
+            "page_count": len(chunks),
+            "image_count": image_count,
+            "image_data": image_data,
+        }
+
+    def _process_docx(self, file_path: Path) -> dict:
+        """Extract text from DOCX using python-docx."""
+        try:
+            import docx
+        except ImportError:
+            return {
+                "type": "docx",
+                "path": str(file_path),
+                "content": f"[DOCX: {file_path.name} — python-docx not installed. Install with: pip install python-docx]",
+                "chunks": [],
+                "paragraph_count": 0,
+            }
+
+        doc = docx.Document(file_path)
+        paragraphs = []
+        chunks = []
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                paragraphs.append(text)
+                chunks.append({"content": text, "type": "text"})
+
+        # Extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = cell.text.strip()
+                    if cell_text:
+                        row_text.append(cell_text)
+                if row_text:
+                    table_row = " | ".join(row_text)
+                    paragraphs.append(table_row)
+                    chunks.append({"content": table_row, "type": "table_row"})
+
+        return {
+            "type": "docx",
+            "path": str(file_path),
+            "content": "\n\n".join(paragraphs),
+            "chunks": chunks,
+            "paragraph_count": len(paragraphs),
+        }
+
+    def _process_csv(self, file_path: Path) -> dict:
+        """Process CSV files using standard library csv module."""
+        import csv
+        
+        rows = []
+        chunks = []
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                reader = csv.reader(f)
+                headers = next(reader, None)
+                if headers:
+                    rows.append(headers)
+                
+                for row in reader:
+                    if any(cell.strip() for cell in row):
+                        rows.append(row)
+                        # Create a natural language representation
+                        row_text = " | ".join(f"{headers[i] if headers else f'Col{i}'}: {cell}" 
+                                             for i, cell in enumerate(row) if cell.strip())
+                        if row_text:
+                            chunks.append({"content": row_text, "type": "csv_row"})
+        except Exception as e:
+            return {
+                "type": "csv",
+                "path": str(file_path),
+                "content": f"[CSV: {file_path.name} — Error reading: {e}]",
+                "chunks": [],
+                "row_count": 0,
+            }
+
+        # Create header summary
+        content_parts = []
+        if headers:
+            content_parts.append(f"Columns: {', '.join(headers)}")
+        content_parts.append(f"Total rows: {len(rows) - (1 if headers else 0)}")
+        
+        # Add sample rows (first 10)
+        for i, row in enumerate(rows[:10], 1):
+            row_text = " | ".join(row)
+            content_parts.append(f"Row {i}: {row_text}")
+
+        return {
+            "type": "csv",
+            "path": str(file_path),
+            "content": "\n".join(content_parts),
+            "chunks": chunks,
+            "row_count": len(rows),
+            "headers": headers,
+        }
+
+    def _process_excel(self, file_path: Path) -> dict:
+        """Process Excel files using openpyxl (for .xlsx) or xlrd (for .xls)."""
+        try:
+            import openpyxl
+        except ImportError:
+            return {
+                "type": "excel",
+                "path": str(file_path),
+                "content": f"[Excel: {file_path.name} — openpyxl not installed. Install with: pip install openpyxl]",
+                "chunks": [],
+                "sheet_count": 0,
+            }
+
+        try:
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+        except Exception as e:
+            return {
+                "type": "excel",
+                "path": str(file_path),
+                "content": f"[Excel: {file_path.name} — Error reading: {e}]",
+                "chunks": [],
+                "sheet_count": 0,
+            }
+
+        all_sheets = []
+        chunks = []
+        sheet_info = []
+
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            sheet_rows = []
+            
+            for row in sheet.iter_rows(values_only=True):
+                if any(cell is not None and str(cell).strip() for cell in row):
+                    row_values = [str(cell) if cell is not None else "" for cell in row]
+                    sheet_rows.append(row_values)
+                    
+                    # Create natural language chunk
+                    row_text = " | ".join(cell for cell in row_values if cell.strip())
+                    if row_text:
+                        chunks.append({
+                            "content": f"[Sheet: {sheet_name}] {row_text}",
+                            "type": "excel_row",
+                            "sheet": sheet_name,
+                        })
+
+            if sheet_rows:
+                sheet_info.append(f"Sheet '{sheet_name}': {len(sheet_rows)} rows")
+                all_sheets.append(f"\n=== Sheet: {sheet_name} ===")
+                for i, row in enumerate(sheet_rows[:20], 1):  # First 20 rows per sheet
+                    row_text = " | ".join(row)
+                    all_sheets.append(f"Row {i}: {row_text}")
+                if len(sheet_rows) > 20:
+                    all_sheets.append(f"... ({len(sheet_rows) - 20} more rows)")
+
+        wb.close()
+
+        return {
+            "type": "excel",
+            "path": str(file_path),
+            "content": "\n".join(sheet_info + all_sheets),
+            "chunks": chunks,
+            "sheet_count": len(wb.sheetnames),
+            "sheet_names": wb.sheetnames,
         }
 
     # ── Media processing (audio / video) ──────────────────────────
@@ -750,6 +986,9 @@ def run_analysis(
     max_iterations: int = 10,
     use_api: bool = False,
     text_only: bool = False,
+    _quiet: bool = False,
+    multi_query: bool = False,
+    rrf_weights: Optional[List[float]] = None,
 ) -> dict:
     """Run full VL-RAG-Graph-RLM analysis with any supported provider.
 
@@ -761,20 +1000,25 @@ def run_analysis(
       5. Knowledge graph extraction via RLM
       6. Query answering via RLM with retrieved context → markdown report
     """
+    # Helper for conditional printing
+    def _print(*args, **kwargs):
+        if not _quiet:
+            print(*args, **kwargs)
+
     # Handle 'auto' provider — resolve from hierarchy
     is_auto = provider == "auto"
     if is_auto:
         try:
             provider = resolve_auto_provider()
-            print(f"[auto] Resolved provider from hierarchy: {provider}")
+            _print(f"[auto] Resolved provider from hierarchy: {provider}")
         except RuntimeError as e:
-            print(f"Error: {e}")
-            print("Run 'vrlmrag --show-hierarchy' to see provider status.")
+            _print(f"Error: {e}")
+            _print("Run 'vrlmrag --show-hierarchy' to see provider status.")
             sys.exit(1)
 
     if provider not in SUPPORTED_PROVIDERS:
-        print(f"Error: Unknown provider '{provider}'")
-        print(f"Supported: {', '.join(SUPPORTED_PROVIDERS.keys())}")
+        _print(f"Error: Unknown provider '{provider}'")
+        _print(f"Supported: {', '.join(SUPPORTED_PROVIDERS.keys())}")
         sys.exit(1)
 
     prov_info = SUPPORTED_PROVIDERS[provider]
@@ -783,8 +1027,8 @@ def run_analysis(
     # Check API key
     api_key = os.getenv(prov_info["env_key"])
     if not api_key:
-        print(f"Error: {prov_info['env_key']} not set")
-        print(f"Get your API key from: {prov_info['url']}")
+        _print(f"Error: {prov_info['env_key']} not set")
+        _print(f"Get your API key from: {prov_info['url']}")
         sys.exit(1)
 
     # Resolve model (env var → explicit arg → provider default)
@@ -793,15 +1037,15 @@ def run_analysis(
         resolved_model = None  # let VLRAGGraphRLM resolve from env/defaults
 
     _embed_mode = "API" if use_api else ("text-only" if text_only else "local Qwen3-VL")
-    print("=" * 70)
-    print(f"vrlmrag v{__version__} — Full VL-RAG-Graph-RLM Pipeline")
-    print("=" * 70)
-    print(f"Provider:       {provider}")
-    print(f"Model:          {resolved_model or '(auto-detect from env/defaults)'}")
-    print(f"Embedding:      {_embed_mode}")
-    print(f"Context budget: {context_budget:,} chars")
-    print(f"Input:          {input_path}")
-    print("=" * 70)
+    _print("=" * 70)
+    _print(f"vrlmrag v{__version__} — Full VL-RAG-Graph-RLM Pipeline")
+    _print("=" * 70)
+    _print(f"Provider:       {provider}")
+    _print(f"Model:          {resolved_model or '(auto-detect from env/defaults)'}")
+    _print(f"Embedding:      {_embed_mode}")
+    _print(f"Context budget: {context_budget:,} chars")
+    _print(f"Input:          {input_path}")
+    _print("=" * 70)
 
     overall_start = time.time()
 
@@ -826,12 +1070,12 @@ def run_analysis(
     _needs_processing = bool(_new_or_modified) or not _embeddings_exist
 
     if _embeddings_exist and not _needs_processing:
-        print(f"\n[1/6] Store up-to-date — {len(_current_files)} file(s) unchanged, skipping document processing")
+        _print(f"\n[1/6] Store up-to-date — {len(_current_files)} file(s) unchanged, skipping document processing")
     else:
         if _embeddings_exist and _new_or_modified:
-            print(f"\n[1/6] Incremental update — {len(_new_or_modified)} new/modified file(s)")
+            _print(f"\n[1/6] Incremental update — {len(_new_or_modified)} new/modified file(s)")
         else:
-            print(f"\n[1/6] Processing documents: {input_path}")
+            _print(f"\n[1/6] Processing documents: {input_path}")
 
     # ================================================================
     # Step 1: Document Processing
@@ -844,7 +1088,7 @@ def run_analysis(
     if _needs_processing:
         _transcriber = None
         if not use_api and not text_only and HAS_PARAKEET:
-            print("  [init] Parakeet ASR available for audio transcription")
+            _print("  [init] Parakeet ASR available for audio transcription")
             _transcriber = create_parakeet_transcriber(
                 cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
             )
@@ -872,7 +1116,7 @@ def run_analysis(
         for doc in documents:
             all_chunks.extend(doc.get("chunks", []))
 
-        print(f"  Processed {len(documents)} document(s), {len(all_chunks)} chunks")
+        _print(f"  Processed {len(documents)} document(s), {len(all_chunks)} chunks")
 
     # ================================================================
     # Step 2: Qwen3-VL Embedding + Vector Store
@@ -892,10 +1136,10 @@ def run_analysis(
         text_model = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
         _lock_ctx = local_model_lock(text_model, description="CLI run_analysis (text-only)")
         _lock_ctx.__enter__()
-        print(f"\n[2/6] Loading text-only embedding ({text_model})...")
+        _print(f"\n[2/6] Loading text-only embedding ({text_model})...")
         embedder = create_text_embedder(model_name=text_model)
         embedding_model_name = text_model
-        print(f"  Embedding dim: {embedder.embedding_dim}")
+        _print(f"  Embedding dim: {embedder.embedding_dim}")
 
         storage_file = str(store_dir / "embeddings_text.json")
 
@@ -904,18 +1148,18 @@ def run_analysis(
             storage_path=storage_file,
         )
     elif use_api and HAS_API_EMBEDDING:
-        print("\n[2/6] Loading API-based embedding (OpenRouter + ZenMux omni)...")
+        _print("\n[2/6] Loading API-based embedding (OpenRouter + ZenMux omni)...")
         try:
             embedder = create_api_embedder()
             embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
             vlm_model = os.getenv("VRLMRAG_VLM_MODEL", "inclusionai/ming-flash-omni-preview")
-            print(f"  Embedding model: {embedding_model_name}")
-            print(f"  Omni VLM model:  {vlm_model}")
+            _print(f"  Embedding model: {embedding_model_name}")
+            _print(f"  Omni VLM model:  {vlm_model}")
         except Exception as e:
-            print(f"\n[ERROR] API embedding failed: {e}")
+            _print(f"\n[ERROR] API embedding failed: {e}")
             if HAS_QWEN3VL:
-                print(f"\n[recovery] Falling back to local Qwen3-VL embeddings...")
-                print(f"[recovery] To use offline mode explicitly, run with --offline flag.")
+                _print(f"\n[recovery] Falling back to local Qwen3-VL embeddings...")
+                _print(f"[recovery] To use offline mode explicitly, run with --offline flag.")
                 # Switch to local mode
                 use_api = False
                 text_only = False
@@ -923,17 +1167,17 @@ def run_analysis(
                 _lock_ctx.__enter__()
                 import torch
                 device = "mps" if torch.backends.mps.is_available() else "cpu"
-                print(f"\n[2/6] Loading Qwen3-VL Embedding model ({device})...")
+                _print(f"\n[2/6] Loading Qwen3-VL Embedding model ({device})...")
                 embedder = create_qwen3vl_embedder(
                     model_name=embedding_model_name, device=device
                 )
-                print(f"  Embedding dim: {embedder.embedding_dim}")
+                _print(f"  Embedding dim: {embedder.embedding_dim}")
             else:
-                print(f"\n[FATAL] Cannot proceed — no embedding provider available.")
-                print(f"        API embedding failed and local Qwen3-VL is not installed.")
-                print(f"\n        To fix this:")
-                print(f"          1. Set valid OPENROUTER_API_KEY in .env for API mode")
-                print(f"          2. Or install local models: pip install torch transformers qwen-vl-utils")
+                _print(f"\n[FATAL] Cannot proceed — no embedding provider available.")
+                _print(f"        API embedding failed and local Qwen3-VL is not installed.")
+                _print(f"\n        To fix this:")
+                _print(f"          1. Set valid OPENROUTER_API_KEY in .env for API mode")
+                _print(f"          2. Or install local models: pip install torch transformers qwen-vl-utils")
                 sys.exit(1)
 
         storage_file = str(store_dir / "embeddings.json")
@@ -944,11 +1188,11 @@ def run_analysis(
         )
         existing_count = len(store.documents)
         if existing_count:
-            print(f"  Loaded {existing_count} existing embeddings from store")
+            _print(f"  Loaded {existing_count} existing embeddings from store")
 
         # Embed text chunks via API
         skipped_count = 0
-        print(f"\n[3/6] Embedding {len(all_chunks)} chunks via API...")
+        _print(f"\n[3/6] Embedding {len(all_chunks)} chunks via API...")
         for chunk in all_chunks:
             content = chunk.get("content", "")
             if not content.strip():
@@ -1026,9 +1270,9 @@ def run_analysis(
 
         # FlashRank reranker (lightweight, works with API mode too)
         if HAS_FLASHRANK:
-            print("\n[4/6] Loading FlashRank Reranker...")
+            _print("\n[4/6] Loading FlashRank Reranker...")
             reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
-            print(f"  Reranker loaded ({reranker_model_name})")
+            _print(f"  Reranker loaded ({reranker_model_name})")
     elif HAS_QWEN3VL:
         _lock_ctx = local_model_lock(embedding_model_name, description="CLI run_analysis (Qwen3-VL)")
         _lock_ctx.__enter__()
@@ -1036,11 +1280,11 @@ def run_analysis(
         import torch
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"\n[2/6] Loading Qwen3-VL Embedding model ({device})...")
+        _print(f"\n[2/6] Loading Qwen3-VL Embedding model ({device})...")
         embedder = create_qwen3vl_embedder(
             model_name=embedding_model_name, device=device
         )
-        print(f"  Embedding dim: {embedder.embedding_dim}")
+        _print(f"  Embedding dim: {embedder.embedding_dim}")
 
         storage_file = str(store_dir / "embeddings.json")
 
@@ -1050,11 +1294,11 @@ def run_analysis(
         )
         existing_count = len(store.documents)
         if existing_count:
-            print(f"  Loaded {existing_count} existing embeddings from store")
+            _print(f"  Loaded {existing_count} existing embeddings from store")
 
         # Embed text chunks (dedup: skips already-embedded content)
         skipped_count = 0
-        print(f"\n[3/6] Embedding {len(all_chunks)} chunks with Qwen3-VL...")
+        _print(f"\n[3/6] Embedding {len(all_chunks)} chunks with Qwen3-VL...")
         for i, chunk in enumerate(all_chunks):
             content = chunk.get("content", "")
             if not content.strip():
@@ -1071,7 +1315,7 @@ def run_analysis(
             )
             embedded_count += 1
             if (embedded_count) % 5 == 0:
-                print(f"  Embedded {embedded_count} new chunks so far...")
+                _print(f"  Embedded {embedded_count} new chunks so far...")
 
         # Embed any extracted images (dedup handled inside store)
         for doc in documents:
@@ -1096,13 +1340,13 @@ def run_analysis(
                     else:
                         skipped_count += 1
                 except Exception as e:
-                    print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
+                    _print(f"  Warning: Could not embed image {img_info['filename']}: {e}")
 
         # Embed video frames from media documents
         for doc in documents:
             frame_paths = doc.get("frame_paths", [])
             if frame_paths:
-                print(f"  Embedding {len(frame_paths)} video frames...")
+                _print(f"  Embedding {len(frame_paths)} video frames...")
                 for i, frame_path in enumerate(frame_paths):
                     try:
                         prev_count = len(store.documents)
@@ -1121,23 +1365,23 @@ def run_analysis(
                         else:
                             skipped_count += 1
                     except Exception as e:
-                        print(f"  Warning: Could not embed frame {i}: {e}")
+                        _print(f"  Warning: Could not embed frame {i}: {e}")
 
-        print(f"  New embeddings: {embedded_count} | Skipped (already in store): {skipped_count}")
-        print(f"  Total in store: {len(store.documents)} documents")
-        print(f"  Store persisted to: {storage_file}")
+        _print(f"  New embeddings: {embedded_count} | Skipped (already in store): {skipped_count}")
+        _print(f"  Total in store: {len(store.documents)} documents")
+        _print(f"  Store persisted to: {storage_file}")
 
         # Load lightweight FlashRank reranker (~34 MB — coexists with embedder)
         if HAS_FLASHRANK:
-            print("\n[4/6] Loading FlashRank Reranker...")
+            _print("\n[4/6] Loading FlashRank Reranker...")
             reranker_vl = create_flashrank_reranker(model_name=reranker_model_name)
-            print(f"  Reranker loaded ({reranker_model_name})")
+            _print(f"  Reranker loaded ({reranker_model_name})")
         else:
-            print("\n[4/6] FlashRank not available — using RRF-only retrieval")
-            print("  Install with: pip install flashrank")
+            _print("\n[4/6] FlashRank not available — using RRF-only retrieval")
+            _print("  Install with: pip install flashrank")
     else:
-        print("\n[2/6] Qwen3-VL not available — using fallback text reranking")
-        print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
+        _print("\n[2/6] Qwen3-VL not available — using fallback text reranking")
+        _print("  Install with: pip install torch transformers qwen-vl-utils torchvision")
         embedding_model_name = "N/A (fallback)"
         reranker_model_name = "N/A (fallback)"
 
@@ -1159,9 +1403,9 @@ def run_analysis(
     if resolved_model:
         rlm_kwargs["model"] = resolved_model
 
-    print(f"\n[5/6] Initializing RLM ({provider})...")
+    _print(f"\n[5/6] Initializing RLM ({provider})...")
     rlm = VLRAGGraphRLM(**rlm_kwargs)
-    print(f"  Model: {rlm.model}")
+    _print(f"  Model: {rlm.model}")
 
     # If auto mode, set up fallback hierarchy for query errors
     fallback_hierarchy = get_available_providers() if is_auto else None
@@ -1172,9 +1416,9 @@ def run_analysis(
     kg_file = store_dir / "knowledge_graph.md"
     knowledge_graph = _load_knowledge_graph(kg_file)
     if knowledge_graph:
-        print(f"\n  Loaded existing knowledge graph ({len(knowledge_graph):,} chars)")
+        _print(f"\n  Loaded existing knowledge graph ({len(knowledge_graph):,} chars)")
 
-    print("\n  Building knowledge graph for new content...")
+    _print("\n  Building knowledge graph for new content...")
     kg_char_limit = min(context_budget, 25000)
     kg_doc_limit = max(2000, kg_char_limit // max(len(documents), 1))
     kg_context = "\n\n".join([d.get("content", "")[:kg_doc_limit] for d in documents])
@@ -1185,31 +1429,38 @@ def run_analysis(
         )
         knowledge_graph = _merge_knowledge_graphs(knowledge_graph, kg_result.response)
         _save_knowledge_graph(kg_file, knowledge_graph)
-        print(f"  Knowledge graph persisted ({len(knowledge_graph):,} chars)")
+        _print(f"  Knowledge graph persisted ({len(knowledge_graph):,} chars)")
     except Exception as e:
         if not knowledge_graph:
             knowledge_graph = f"Could not build knowledge graph: {e}"
-        print(f"  Warning: KG extraction failed: {e}")
+        _print(f"  Warning: KG extraction failed: {e}")
 
     # ================================================================
     # Step 5: Run Queries with Qwen3-VL retrieval
     # ================================================================
     queries_to_run: List[str] = []
     if query:
-        queries_to_run = [query]
+        if multi_query:
+            # Generate sub-queries for broader recall
+            _print(f"[multi-query] Generating sub-queries for: {query}")
+            sub_queries = generate_sub_queries(query, rlm)
+            queries_to_run = sub_queries
+            _print(f"[multi-query] Generated {len(sub_queries)} queries total")
+        else:
+            queries_to_run = [query]
     else:
         queries_to_run = [
             "What are the main topics covered?",
             "Summarize the key concepts presented.",
         ]
 
-    print(f"\n[6/6] Running {len(queries_to_run)} queries with full VL-RAG pipeline...")
+    _print(f"\n[6/6] Running {len(queries_to_run)} queries with full VL-RAG pipeline...")
     query_results: List[Dict[str, Any]] = []
     rrf = ReciprocalRankFusion(k=60)
     fallback_reranker = CompositeReranker()
 
     for q in queries_to_run:
-        print(f"\n  Query: {q}")
+        _print(f"\n  Query: {q}")
         qr = _run_vl_rag_query(
             q,
             store=store,
@@ -1225,6 +1476,8 @@ def run_analysis(
             resolved_model=resolved_model,
             max_depth=max_depth,
             max_iterations=max_iterations,
+            verbose=not _quiet,
+            rrf_weights=rrf_weights or [4.0, 1.0],
         )
         query_results.append(qr)
 
@@ -1246,17 +1499,109 @@ def run_analysis(
         "queries": query_results,
     }
 
-    print("\n" + "=" * 70)
-    print("Generating markdown report...")
-    print("=" * 70)
+    if not _quiet:
+        _print("\n" + "=" * 70)
+        _print("Generating markdown report...")
+        _print("=" * 70)
 
-    generator = MarkdownReportGenerator()
-    report = generator.generate(results, output)
+        generator = MarkdownReportGenerator()
+        report = generator.generate(results, output)
 
-    if not output:
-        print("\n" + report)
+        if not output:
+            _print("\n" + report)
 
     return results
+
+
+def _run_quality_check(
+    collection_name: str,
+    provider: str,
+    model: Optional[str] = None,
+    max_depth: int = 3,
+    max_iterations: int = 10,
+) -> None:
+    """Run RLM-powered embedding quality assessment for a collection."""
+    from vl_rag_graph_rlm.rlm_core import VLRAGGraphRLM
+    from vl_rag_graph_rlm.collections import load_collection_meta, collection_load_kg
+    
+    print(f"\n[quality-check:{collection_name}] RLM-powered embedding quality assessment")
+    print("=" * 60)
+    
+    meta = load_collection_meta(collection_name)
+    slug = meta["name"]
+    doc_count = meta.get("document_count", 0)
+    chunk_count = meta.get("chunk_count", 0)
+    embedding_model = meta.get("embedding_model", "unknown")
+    
+    print(f"Collection: {meta.get('display_name', slug)}")
+    print(f"Documents: {doc_count} | Chunks: {chunk_count}")
+    print(f"Embedding model: {embedding_model}")
+    
+    kg = collection_load_kg(slug)
+    if not kg:
+        print("\n[Warning] No knowledge graph found")
+        kg_context = "No knowledge graph available."
+    else:
+        kg_context = kg[:8000]
+        print(f"Knowledge graph: {len(kg):,} chars")
+    
+    rlm_kwargs = {
+        "provider": provider,
+        "temperature": 0.0,
+        "max_depth": max_depth,
+        "max_iterations": max_iterations,
+    }
+    if model:
+        rlm_kwargs["model"] = model
+    
+    rlm = VLRAGGraphRLM(**rlm_kwargs)
+    print(f"RLM: {rlm.model} (provider: {provider})")
+    print("=" * 60)
+    
+    quality_prompt = """You are an embedding quality assessment system. Analyze the collection metadata and knowledge graph to evaluate retrieval quality.
+
+Provide a quality assessment with:
+- Overall Quality Score (0-100)
+- Strengths: What's working well
+- Weaknesses: What could be improved  
+- Recommendations: Specific actions to improve quality
+
+Respond with a structured assessment."""
+
+    print("\nRunning RLM quality assessment...")
+    try:
+        assessment_context = f"""Collection: {meta.get('display_name', slug)}
+Documents: {doc_count} | Chunks: {chunk_count}
+Embedding Model: {embedding_model}
+Reranker: {meta.get('reranker_model', 'unknown')}
+Sources: {len(meta.get('sources', []))}
+
+Knowledge Graph (first 8000 chars):
+{kg_context}"""
+        
+        result = rlm.completion(quality_prompt, assessment_context[:12000])
+        
+        print("\n" + "=" * 60)
+        print("QUALITY ASSESSMENT REPORT")
+        print("=" * 60)
+        print(result.response)
+        print("=" * 60)
+        
+        import re
+        score_match = re.search(r'(\d{1,3})\s*/\s*100|score[:\s]+(\d{1,3})', result.response, re.IGNORECASE)
+        if score_match:
+            score = score_match.group(1) or score_match.group(2)
+            print(f"\nDetected Quality Score: {score}/100")
+            if int(score) >= 80:
+                print("Status: Excellent")
+            elif int(score) >= 60:
+                print("Status: Good")
+            elif int(score) >= 40:
+                print("Status: Fair — Reindexing may help")
+            else:
+                print("Status: Poor — Reindexing recommended")
+    except Exception as e:
+        print(f"\n[Error] Quality assessment failed: {e}")
 
 
 # Backward-compatible aliases
@@ -1321,30 +1666,128 @@ def _try_fallback_query(
 def _keyword_search(
     store: "MultimodalVectorStore", query: str, top_k: int = 20
 ) -> List[SearchResult]:
-    """Simple keyword search across the vector store documents."""
+    """BM25 keyword search across the vector store documents.
+    
+    Uses BM25 ranking algorithm (state-of-the-art for keyword retrieval).
+    Falls back to simple token overlap if rank-bm25 not installed.
+    """
     import re
-
+    import math
+    
     query_terms = set(re.findall(r"\w+", query.lower()))
-    results = []
-
-    for doc in store.documents.values():
-        content_lower = doc.content.lower()
-        matches = sum(1 for term in query_terms if term in content_lower)
-
-        if matches > 0:
-            score = matches / len(query_terms) if query_terms else 0
-            results.append(
-                SearchResult(
-                    id=doc.id,
-                    content=doc.content,
-                    metadata=doc.metadata,
-                    keyword_score=score,
-                    composite_score=score,
+    if not query_terms:
+        return []
+    
+    # Try to use rank-bm25 if available
+    try:
+        from rank_bm25 import BM25Okapi
+        
+        # Prepare corpus
+        corpus = []
+        doc_ids = []
+        for doc_id, doc in store.documents.items():
+            tokens = re.findall(r"\w+", doc.content.lower())
+            corpus.append(tokens)
+            doc_ids.append(doc_id)
+        
+        if not corpus:
+            return []
+        
+        # Build BM25 index
+        bm25 = BM25Okapi(corpus)
+        
+        # Score query
+        query_tokens = list(query_terms)
+        scores = bm25.get_scores(query_tokens)
+        
+        # Create results
+        results = []
+        for idx, score in enumerate(scores):
+            if score > 0:
+                doc_id = doc_ids[idx]
+                doc = store.get(doc_id)
+                if doc:
+                    results.append(
+                        SearchResult(
+                            id=doc_id,
+                            content=doc.content,
+                            metadata=doc.metadata,
+                            keyword_score=score,
+                            composite_score=score,
+                        )
+                    )
+        
+        results.sort(key=lambda x: x.keyword_score, reverse=True)
+        return results[:top_k]
+        
+    except ImportError:
+        # Fallback to simple token overlap if rank-bm25 not installed
+        results = []
+        for doc in store.documents.values():
+            content_lower = doc.content.lower()
+            matches = sum(1 for term in query_terms if term in content_lower)
+            
+            if matches > 0:
+                score = matches / len(query_terms)
+                results.append(
+                    SearchResult(
+                        id=doc.id,
+                        content=doc.content,
+                        metadata=doc.metadata,
+                        keyword_score=score,
+                        composite_score=score,
+                    )
                 )
-            )
+        
+        results.sort(key=lambda x: x.keyword_score, reverse=True)
+        return results[:top_k]
 
-    results.sort(key=lambda x: x.keyword_score, reverse=True)
-    return results[:top_k]
+
+def generate_sub_queries(original_query: str, rlm: "VLRAGGraphRLM") -> List[str]:
+    """Generate sub-queries to improve recall for complex queries.
+    
+    Uses RLM to break down the original query into multiple
+    complementary sub-queries for broader retrieval coverage.
+    
+    Args:
+        original_query: The original user query
+        rlm: Initialized RLM instance
+        
+    Returns:
+        List of sub-queries including the original
+    """
+    prompt = f"""Given the following query, generate 2-3 complementary sub-queries that would help retrieve comprehensive information.
+
+Original query: "{original_query}"
+
+Generate sub-queries that:
+1. Cover different aspects or angles of the main question
+2. Use different keywords or phrasings for the same concept
+3. Include both broad and specific interpretations
+
+Respond with ONLY the sub-queries, one per line. Do not include numbering or explanations.
+
+Example:
+Query: "What are the benefits of machine learning in healthcare?"
+Sub-queries:
+machine learning applications in medical diagnosis
+AI healthcare benefits and patient outcomes
+automated diagnosis systems advantages
+
+Your sub-queries:"""
+    
+    try:
+        result = rlm.completion(prompt, "")
+        lines = [line.strip() for line in result.response.strip().split('\n') if line.strip()]
+        # Filter out any explanatory lines that might have been added
+        sub_queries = [line for line in lines if len(line) > 10 and not line.lower().startswith(('sub-query', 'example', 'note', 'here are'))]
+        
+        # Always include the original query
+        all_queries = [original_query] + sub_queries[:3]  # Max 3 sub-queries + original
+        return list(dict.fromkeys(all_queries))  # Remove duplicates, preserve order
+    except Exception:
+        # If generation fails, return just the original query
+        return [original_query]
 
 
 # ── Retrieval-specific embedding instructions ──────────────────────────
@@ -1396,6 +1839,7 @@ def _run_vl_rag_query(
     max_depth: int,
     max_iterations: int,
     verbose: bool = True,
+    rrf_weights: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """Run a single query through the full VL-RAG-Graph-RLM pipeline.
 
@@ -1427,7 +1871,7 @@ def _run_vl_rag_query(
 
         if keyword_results:
             fused_results = rrf.fuse(
-                [dense_results, keyword_results], weights=[4.0, 1.0],
+                [dense_results, keyword_results], weights=rrf_weights or [4.0, 1.0],
             )
         else:
             fused_results = dense_results
@@ -1586,6 +2030,55 @@ def _merge_knowledge_graphs(existing: str, new_fragment: str) -> str:
     if not new_fragment:
         return existing
     return f"{existing}\n\n---\n\n{new_fragment}"
+
+
+def sliding_window_chunks(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """Split text into overlapping chunks using sliding window.
+    
+    Args:
+        text: The text to split
+        chunk_size: Maximum characters per chunk
+        overlap: Number of characters to overlap between chunks
+        
+    Returns:
+        List of text chunks with overlap
+    """
+    if not text:
+        return []
+    
+    chunks = []
+    start = 0
+    text_len = len(text)
+    
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
+        
+        # Try to break at a sentence or word boundary
+        if end < text_len:
+            # Look for sentence ending
+            for i in range(end, max(start, end - 100), -1):
+                if text[i] in '.!?\n':
+                    end = i + 1
+                    break
+            else:
+                # No sentence break found, look for word boundary
+                for i in range(end, max(start, end - 50), -1):
+                    if text[i].isspace():
+                        end = i
+                        break
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        
+        # Move window with overlap
+        start = end - overlap if end < text_len else text_len
+        
+        # Prevent infinite loop if no progress
+        if start >= end:
+            break
+    
+    return chunks
 
 
 def run_interactive_session(
@@ -2208,7 +2701,22 @@ def run_collection_add(
             except Exception as e:
                 print(f"  Warning: KG extraction failed: {e}")
 
-        record_source(slug, input_path, len(documents), len(all_chunks))
+        # Determine embedding model name for tracking
+        embedding_model_name = ""
+        if text_only and HAS_TEXT_EMBEDDING:
+            embedding_model_name = os.getenv("VRLMRAG_TEXT_ONLY_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+        elif use_api and HAS_API_EMBEDDING:
+            embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+        elif HAS_QWEN3VL:
+            embedding_model_name = os.getenv("VRLMRAG_LOCAL_EMBEDDING_MODEL", "Qwen/Qwen3-VL-Embedding-2B")
+        
+        reranker_model_name = os.getenv("VRLMRAG_RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2")
+        
+        record_source(
+            slug, input_path, len(documents), len(all_chunks),
+            embedding_model=embedding_model_name,
+            reranker_model=reranker_model_name,
+        )
         print(f"  Collection '{slug}' updated.")
 
 
@@ -2418,6 +2926,29 @@ def show_collection_info(name: str) -> None:
     print(f"  Documents:   {meta.get('document_count', 0)}")
     print(f"  Chunks:      {meta.get('chunk_count', 0)}")
     print(f"  Directory:   {_collection_dir(slug)}")
+    
+    # Embedding model info
+    emb_model = meta.get('embedding_model', '')
+    reranker_model = meta.get('reranker_model', '')
+    print(f"  Embedding:   {emb_model or '(not tracked)'}")
+    if reranker_model:
+        print(f"  Reranker:    {reranker_model}")
+    
+    # Model history
+    model_history = meta.get('model_history', [])
+    if model_history:
+        print(f"\n  Model change history:")
+        for change in model_history[-5:]:  # Show last 5 changes
+            print(f"    {change['timestamp'][:19]}: {change['previous_model']} → {change['new_model']}")
+    
+    # Check for mixed models in sources
+    sources = meta.get('sources', [])
+    source_models = set(s.get('embedding_model', '') for s in sources if s.get('embedding_model'))
+    if len(source_models) > 1:
+        print(f"\n  [Warning] Collection has mixed embedding models:")
+        for model in sorted(source_models):
+            print(f"    - {model}")
+        print(f"    Run 'vrlmrag -c {slug} --reindex' to normalize with current model")
 
     # Embedding count
     emb_file = Path(collection_embeddings_path(slug))
@@ -2597,6 +3128,38 @@ def main():
         help="Use lightweight text-only embeddings — skips image/video (env: VRLMRAG_TEXT_ONLY)",
     )
 
+    # ── Chunking configuration ────────────────────────────────────────
+    parser.add_argument(
+        "--chunk-size", type=int, default=1000,
+        help="Maximum characters per chunk for sliding window chunking (default: 1000)",
+    )
+
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=200,
+        help="Character overlap between chunks for sliding window (default: 200)",
+    )
+
+    parser.add_argument(
+        "--use-sqlite", action="store_true",
+        help="Use SQLite backend for vector store (default: JSON files)",
+    )
+
+    # ── RRF Configuration ─────────────────────────────────────────────
+    parser.add_argument(
+        "--rrf-dense-weight", type=float, default=4.0,
+        help="Weight for dense (embedding) results in RRF fusion (default: 4.0)",
+    )
+
+    parser.add_argument(
+        "--rrf-keyword-weight", type=float, default=1.0,
+        help="Weight for keyword (BM25) results in RRF fusion (default: 1.0)",
+    )
+
+    parser.add_argument(
+        "--multi-query", action="store_true",
+        help="Multi-query retrieval — generate sub-queries to improve recall",
+    )
+
     # ── Model upgrade / refresh flags ─────────────────────────────────
     parser.add_argument(
         "--reindex", action="store_true",
@@ -2611,6 +3174,46 @@ def main():
     parser.add_argument(
         "--model-compare", metavar="OLD_MODEL",
         help="Compare embeddings: run query with both OLD_MODEL and current model, show divergence",
+    )
+
+    parser.add_argument(
+        "--check-model", metavar="MODEL_NAME",
+        help="Check if collection is compatible with target embedding model (requires -c)",
+    )
+
+    parser.add_argument(
+        "--quality-check", action="store_true",
+        help="RLM-powered embedding quality assessment — evaluate retrieval quality for a collection (requires -c)",
+    )
+
+    parser.add_argument(
+        "--export-graph", metavar="PATH",
+        help="Export knowledge graph to file (use with --graph-format)",
+    )
+
+    parser.add_argument(
+        "--graph-format", choices=["mermaid", "graphviz", "networkx"], default="mermaid",
+        help="Graph export format: mermaid (default), graphviz (DOT), networkx (pickle/JSON)",
+    )
+
+    parser.add_argument(
+        "--graph-stats", action="store_true",
+        help="Show knowledge graph statistics (entities, relationships, types)",
+    )
+
+    parser.add_argument(
+        "--deduplicate-kg", action="store_true",
+        help="Deduplicate entities in knowledge graph (merge similar entity names)",
+    )
+
+    parser.add_argument(
+        "--dedup-threshold", type=float, default=0.85,
+        help="Similarity threshold for entity deduplication (default: 0.85, range: 0-1)",
+    )
+
+    parser.add_argument(
+        "--dedup-report", action="store_true",
+        help="Show deduplication report without applying changes",
     )
 
     # ── Collection arguments ──────────────────────────────────────────
@@ -2812,6 +3415,131 @@ def main():
         return
 
     # ── Collection dispatch ────────────────────────────────────────────
+    if args.quality_check:
+        if not args.collection:
+            print("Error: --quality-check requires -c <collection_name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.rlm_core import VLRAGGraphRLM
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            _run_quality_check(cname, provider, args.model, max_depth=args.max_depth, max_iterations=args.max_iterations)
+        return
+
+    # ── Handle graph export and stats ──────────────────────────────────
+    if args.export_graph or args.graph_stats or args.deduplicate_kg or args.dedup_report:
+        from vl_rag_graph_rlm.kg_visualization import (
+            save_graph_visualization, get_graph_stats, 
+            export_to_mermaid, export_to_graphviz
+        )
+        from vl_rag_graph_rlm.kg_deduplication import (
+            deduplicate_knowledge_graph, get_deduplication_report
+        )
+        
+        # Get knowledge graph from collection or input path
+        kg_text = ""
+        kg_source = ""
+        if args.collection:
+            for cname in args.collection:
+                if collection_exists(cname):
+                    from vl_rag_graph_rlm.collections import collection_load_kg
+                    slug = load_collection_meta(cname)["name"]
+                    kg = collection_load_kg(slug)
+                    if kg:
+                        kg_text += kg + "\n\n"
+                        kg_source = f"collection:{cname}"
+        elif input_path:
+            store_path = Path(input_path)
+            if store_path.is_file():
+                store_path = store_path.parent
+            kg_file = store_path / ".vrlmrag_store" / "knowledge_graph.md"
+            if kg_file.exists():
+                kg_text = kg_file.read_text(encoding="utf-8")
+                kg_source = str(kg_file)
+        
+        if not kg_text.strip():
+            print("Error: No knowledge graph found")
+            print("Process documents first or specify a collection with -c")
+            sys.exit(1)
+        
+        # Handle deduplication report
+        if args.dedup_report:
+            report = get_deduplication_report(kg_text, args.dedup_threshold)
+            print(f"\nDeduplication Report (threshold: {args.dedup_threshold}):")
+            print(f"  Total entities: {report['total_entities']}")
+            print(f"  Duplicates found: {report['duplicates_found']}")
+            if report['duplicate_pairs']:
+                print("\n  Duplicate pairs:")
+                for pair in report['duplicate_pairs'][:10]:  # Show top 10
+                    print(f"    - '{pair['entity1']}' ≈ '{pair['entity2']}' ({pair['similarity']:.2f})")
+        
+        # Handle deduplication
+        if args.deduplicate_kg:
+            deduped_text, merge_map = deduplicate_knowledge_graph(kg_text, args.dedup_threshold)
+            if merge_map:
+                print(f"\nDeduplicated {len(merge_map)} entities:")
+                for old, new in list(merge_map.items())[:10]:
+                    print(f"  - '{old}' → '{new}'")
+                if len(merge_map) > 10:
+                    print(f"  ... and {len(merge_map) - 10} more")
+                
+                # Save back
+                if args.collection:
+                    for cname in args.collection:
+                        if collection_exists(cname):
+                            from vl_rag_graph_rlm.collections import collection_save_kg
+                            slug = load_collection_meta(cname)["name"]
+                            collection_save_kg(slug, deduped_text)
+                            print(f"\nSaved deduplicated KG to collection: {cname}")
+                elif input_path and kg_source:
+                    Path(kg_source).write_text(deduped_text, encoding="utf-8")
+                    print(f"\nSaved deduplicated KG to: {kg_source}")
+                
+                kg_text = deduped_text
+            else:
+                print("\nNo duplicates found at current threshold.")
+        
+        if args.graph_stats:
+            stats = get_graph_stats(kg_text)
+            print("\nKnowledge Graph Statistics:")
+            print(f"  Entities: {stats['entity_count']}")
+            print(f"  Relationships: {stats['relationship_count']}")
+            print(f"  Connected ratio: {stats['connected_ratio']:.2f}")
+            if stats['entity_types']:
+                print("  Entity types:")
+                for etype, count in sorted(stats['entity_types'].items(), key=lambda x: -x[1]):
+                    print(f"    - {etype}: {count}")
+        
+        if args.export_graph:
+            save_graph_visualization(kg_text, args.export_graph, args.graph_format)
+            print(f"\nExported graph to: {args.export_graph} ({args.graph_format})")
+        
+        return
+
+    if args.check_model:
+        if not args.collection:
+            print("Error: --check-model requires -c <collection_name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.collections import check_model_compatibility
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            result = check_model_compatibility(cname, args.check_model)
+            print(f"\n[collection:{cname}] Model compatibility check:")
+            print(f"  Current model: {result['current_model'] or '(not set)'}")
+            print(f"  Target model:  {result['target_model']}")
+            print(f"  Compatible:    {'Yes' if result['compatible'] else 'No'}")
+            if result['needs_reindex']:
+                print(f"  Action needed: Reindex required — models differ")
+                print(f"    Run: vrlmrag -c {cname} --reindex")
+            if result['mixed_models']:
+                print(f"  Warning: Collection has mixed models: {', '.join(result['source_models'])}")
+            if result['history']:
+                print(f"  Model changes: {len(result['history'])} recorded")
+        return
+
     if args.collection_list:
         show_collection_list()
         return
@@ -2896,6 +3624,78 @@ def main():
         )
         return
 
+    # ── Handle --model-compare ─────────────────────────────────────────
+    if args.model_compare and input_path:
+        print(f"\n[model-compare] Comparing embeddings between '{args.model_compare}' and current model")
+        print(f"[model-compare] Input: {input_path}")
+        if args.query:
+            print(f"[model-compare] Query: {args.query}")
+        print()
+        
+        # Run with old model
+        print(f"[model-compare] Running with OLD model: {args.model_compare}")
+        print("-" * 50)
+        old_result = run_analysis(
+            provider=provider,
+            input_path=input_path,
+            query=args.query,
+            output=None,  # Don't save output for comparison runs
+            model=args.model_compare,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            use_api=use_api,
+            text_only=args.text_only,
+            _quiet=True,  # Suppress normal output
+        )
+        
+        # Run with current model
+        print(f"\n[model-compare] Running with CURRENT model: {args.model or 'default'}")
+        print("-" * 50)
+        new_result = run_analysis(
+            provider=provider,
+            input_path=input_path,
+            query=args.query,
+            output=None,
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iterations=args.max_iterations,
+            use_api=use_api,
+            text_only=args.text_only,
+            _quiet=True,
+        )
+        
+        # Compare and display results
+        print("\n" + "=" * 60)
+        print("MODEL COMPARISON RESULTS")
+        print("=" * 60)
+        
+        from difflib import unified_diff
+        old_lines = str(old_result.get('response', old_result)).split('\n')
+        new_lines = str(new_result.get('response', new_result)).split('\n')
+        
+        diff = list(unified_diff(
+            old_lines, new_lines,
+            fromfile=f"OLD: {args.model_compare}",
+            tofile=f"NEW: {args.model or 'default'}",
+            lineterm=''
+        ))
+        
+        if diff:
+            print("\nDifferences detected:")
+            for line in diff[:100]:  # Limit output
+                print(line)
+            if len(diff) > 100:
+                print(f"... ({len(diff) - 100} more lines)")
+        else:
+            print("\nNo differences detected — responses are identical.")
+        
+        # Summary stats
+        print(f"\nOld model response length: {len(str(old_result.get('response', '')))} chars")
+        print(f"New model response length: {len(str(new_result.get('response', '')))} chars")
+        print(f"Difference: {len(str(new_result.get('response', ''))) - len(str(old_result.get('response', '')))} chars")
+        
+        return
+
     # ── Default: run_analysis ──────────────────────────────────────────
     if not input_path:
         parser.print_help()
@@ -2912,6 +3712,8 @@ def main():
         max_iterations=args.max_iterations,
         use_api=use_api,
         text_only=args.text_only,
+        multi_query=args.multi_query,
+        rrf_weights=[args.rrf_dense_weight, args.rrf_keyword_weight],
     )
 
 

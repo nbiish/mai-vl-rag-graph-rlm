@@ -407,8 +407,12 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
 | `--text-only` | | Use text-only embeddings (~1.2 GB RAM, skips images/videos) |
 | `--use-api` | | Use API-based embeddings (~200 MB RAM, requires internet) |
+| `--local` | | Use local Qwen3-VL models (requires explicit opt-in) |
+| `--offline` | | Force offline mode (blocks video/audio for safety) |
 | `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
 | `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
+| `--reindex` | | Force re-embedding of all documents (model upgrade workflow) |
+| `--rebuild-kg` | | Regenerate knowledge graph with current RLM (model upgrade workflow) |
 | `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
 | `--add PATH` | | Add documents at PATH to the specified collection(s) |
 | `--collection-list` | | List all available collections |

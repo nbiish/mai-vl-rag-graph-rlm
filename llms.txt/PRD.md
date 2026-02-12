@@ -125,6 +125,18 @@ vrlmrag -c research -i                           # interactive w/ collection
 vrlmrag --collection-list                        # list all collections
 vrlmrag -c research --collection-info            # show collection details
 vrlmrag -c research --collection-delete          # delete a collection
+
+# Model upgrade workflows — refresh vector stores when models improve
+vrlmrag ./docs --reindex                          # re-embed all docs
+vrlmrag ./docs --rebuild-kg                       # regenerate KG
+vrlmrag ./docs --reindex --rebuild-kg             # full refresh
+vrlmrag -c research --reindex                     # reindex a collection
+vrlmrag -c research --rebuild-kg                 # rebuild collection KG
+
+# Embedding modes — API (default), local, or offline
+vrlmrag document.pptx                             # API mode (default)
+vrlmrag --local document.pptx                     # local Qwen3-VL models
+vrlmrag --offline document.pptx                   # offline fallback (blocks video/audio)
 ```
 
 - **UX:** `--provider` defaults to `auto`. The hierarchy is editable via `PROVIDER_HIERARCHY` in `.env`.

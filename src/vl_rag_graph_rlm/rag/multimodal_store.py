@@ -61,19 +61,22 @@ class MultimodalVectorStore:
         storage_path: Optional[str] = None,
         use_qwen_reranker: bool = False,
         reranker_provider: Optional[Any] = None,
-        transcription_provider: Optional[Any] = None
+        transcription_provider: Optional[Any] = None,
+        use_sqlite: bool = False,
     ):
         """Initialize multimodal vector store.
         
         Args:
             embedding_provider: Qwen3-VL embedding provider
-            storage_path: Optional path for persistence
+            storage_path: Optional path for persistence (JSON or SQLite)
             use_qwen_reranker: Whether to use Qwen3-VL reranker
             reranker_provider: Optional Qwen3-VL reranker provider
             transcription_provider: Optional audio transcription provider (e.g., Parakeet)
+            use_sqlite: If True, use SQLite backend instead of JSON
         """
         self.embedding_provider = embedding_provider
         self.storage_path = storage_path
+        self.use_sqlite = use_sqlite
         self.documents: Dict[str, MultimodalDocument] = {}
         self._content_hashes: Set[str] = set()
         self._hash_to_id: Dict[str, str] = {}  # O(1) hash → doc_id lookup
@@ -81,14 +84,22 @@ class MultimodalVectorStore:
         self.reranker = reranker_provider
         self.transcription_provider = transcription_provider
 
+        # SQLite backend
+        self._sqlite_store: Optional[Any] = None
+        
         # NumPy embedding matrix cache for vectorized search
         self._embedding_matrix: Optional[np.ndarray] = None
         self._matrix_doc_ids: List[str] = []
         self._matrix_dirty: bool = True
         
-        if storage_path and os.path.exists(storage_path):
-            self._load()
-            self._rebuild_content_hashes()
+        if storage_path:
+            if use_sqlite:
+                from vl_rag_graph_rlm.rag.sqlite_store import SQLiteVectorStore
+                self._sqlite_store = SQLiteVectorStore(storage_path)
+                self._load_sqlite()
+            elif os.path.exists(storage_path):
+                self._load()
+                self._rebuild_content_hashes()
     
     def add_text(
         self,
@@ -877,7 +888,14 @@ class MultimodalVectorStore:
         return self._hash_content(content) in self._content_hashes
 
     def _save(self):
-        """Persist to disk."""
+        """Persist to disk (JSON or SQLite)."""
+        if self.use_sqlite and self._sqlite_store:
+            self._save_sqlite()
+        else:
+            self._save_json()
+    
+    def _save_json(self):
+        """Save to JSON file."""
         data = {
             doc_id: {
                 "id": doc.id,
@@ -894,8 +912,34 @@ class MultimodalVectorStore:
         with open(self.storage_path, 'w') as f:
             json.dump(data, f)
     
+    def _save_sqlite(self):
+        """Save to SQLite database."""
+        if not self._sqlite_store:
+            return
+        
+        for doc_id, doc in self.documents.items():
+            content_hash = self._hash_content(doc.content)
+            doc_type = "image" if doc.image_path else ("video" if doc.video_path else "text")
+            
+            self._sqlite_store.save_document(
+                doc_id=doc_id,
+                content=doc.content,
+                content_hash=content_hash,
+                embedding=np.array(doc.embedding) if doc.embedding else np.array([]),
+                doc_type=doc_type,
+                metadata=doc.metadata,
+                image_path=doc.image_path,
+            )
+
     def _load(self):
-        """Load from disk."""
+        """Load from disk (JSON or SQLite)."""
+        if self.use_sqlite and self._sqlite_store:
+            self._load_sqlite()
+        else:
+            self._load_json()
+    
+    def _load_json(self):
+        """Load from JSON file."""
         with open(self.storage_path, 'r') as f:
             data = json.load(f)
         
@@ -910,6 +954,23 @@ class MultimodalVectorStore:
             )
             for doc_id, d in data.items()
         }
+    
+    def _load_sqlite(self):
+        """Load from SQLite database."""
+        if not self._sqlite_store:
+            return
+        
+        docs_data = self._sqlite_store.load_all_documents()
+        
+        self.documents = {}
+        for doc_id, data in docs_data.items():
+            self.documents[doc_id] = MultimodalDocument(
+                id=doc_id,
+                content=data["content"],
+                metadata=data.get("metadata", {}),
+                embedding=data.get("embedding").tolist() if "embedding" in data else None,
+                image_path=data.get("image_path"),
+            )
 
 
 # Factory function
