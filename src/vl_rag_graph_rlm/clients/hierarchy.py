@@ -17,6 +17,7 @@ DEFAULT_HIERARCHY = [
     "modalresearch",
     "sambanova",
     "nebius",
+    "ollama",
     "groq",
     "cerebras",
     "zai",
@@ -37,6 +38,7 @@ PROVIDER_KEY_MAP = {
     "modalresearch": "MODAL_RESEARCH_API_KEY",
     "sambanova": "SAMBANOVA_API_KEY",
     "nebius": "NEBIUS_API_KEY",
+    "ollama": "OLLAMA_ENABLED",  # Ollama doesn't use API keys, just checks if enabled
     "groq": "GROQ_API_KEY",
     "cerebras": "CEREBRAS_API_KEY",
     "zai": "ZAI_API_KEY",

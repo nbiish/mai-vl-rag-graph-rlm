@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-02-12
 
+### Modal Research Provider (New!)
+**Free GLM-5 745B frontier inference** via Modal Research's experimental OpenAI-compatible endpoint:
+- **Model:** `zai-org/GLM-5-FP8` — 745B MoE (44B active), FP8 quantized, MIT license
+- **Endpoint:** `https://api.us-west-2.modal.direct/v1` — 8×B200 GPUs via SGLang
+- **Performance:** 30-75 tok/s per user, frontier-class reasoning
+- **Status:** Experimental (free tier: 1 concurrent request, may have intermittent downtime)
+- **Get key:** https://modal.com/glm-5-endpoint
+- **Documentation:** https://modal.com/blog/try-glm-5
+
+**Files changed:**
+- `src/vl_rag_graph_rlm/clients/openai_compatible.py` — `ModalResearchClient` class
+- `src/vl_rag_graph_rlm/clients/hierarchy.py` — `modalresearch` added to `DEFAULT_HIERARCHY` (first position)
+- `src/vl_rag_graph_rlm/clients/__init__.py` — Import, `get_client()` routing, `__all__`
+- `src/vl_rag_graph_rlm/types.py` — `modalresearch` in `ProviderType` literal
+- `src/vl_rag_graph_rlm/rlm_core.py` — `_get_default_model()` and `_get_recursive_model()` defaults
+- `src/vrlmrag.py` — `SUPPORTED_PROVIDERS` entry
+- `templates/provider_modalresearch.py` — New provider template
+- `.env` — `MODAL_RESEARCH_API_KEY`, `MODAL_RESEARCH_API_KEY_FALLBACK`, `MODAL_RESEARCH_MODEL`
+- `.env.example` — Modal Research section with documentation
+
+### Fallback API Key System (New!)
+**Universal multi-account support** with automatic fallback when primary API keys fail:
+- **Pattern:** `{PROVIDER}_API_KEY_FALLBACK` — every provider supports this suffix
+- **Retry chain:** Primary key → Fallback key (same provider, different account) → Model fallback → Provider hierarchy
+- **Use cases:** Credit distribution across accounts, rate limit mitigation, billing redundancy
+- **Key promotion:** After fallback succeeds, it becomes primary for the rest of the session
+
+**Implementation:**
+- `OpenAICompatibleClient` (base class) — fallback key retry in `_raw_completion()` / `_raw_acompletion()`
+- `AnthropicClient` — fallback key support in `completion()` / `acompletion()`
+- `AnthropicCompatibleClient` — inherits fallback from `AnthropicClient`
+- `GeminiClient` — fallback key support in `completion()` / `acompletion()`
+
+**Files changed:**
+- `src/vl_rag_graph_rlm/clients/openai_compatible.py` — `_fallback_api_key`, `_fallback_key_client`, `_fallback_key_async_client`, `_using_fallback_key`, `_openai_kwargs`
+- `src/vl_rag_graph_rlm/clients/anthropic.py` — Logging import, fallback key attributes, `_get_fallback_key_client()`, `_get_fallback_key_async_client()`, retry logic in `completion()`/`acompletion()`
+- `src/vl_rag_graph_rlm/clients/gemini.py` — Logging import, fallback key attributes, `_get_fallback_key_client()`, retry logic in `completion()`/`acompletion()`
+- `.env.example` — `_FALLBACK` key documentation for ALL providers (15+ entries)
+
 ### Omni Model Fallback Chain (New!)
 Three-tier resilient multimodal processing for images, audio, and video:
 - **Primary Omni:** ZenMux `inclusionai/ming-flash-omni-preview` — handles text, images, audio, video

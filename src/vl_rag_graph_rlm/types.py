@@ -23,6 +23,7 @@ ProviderType = Literal[
     "nebius",
     "cerebras",
     "modalresearch",
+    "ollama",
     "litellm",
 ]
 

@@ -1,6 +1,10 @@
-"""Ollama provider for local LLM inference.
+"""Ollama provider for local LLM inference OR Claude API mode.
 
-Supports local models via Ollama API (http://localhost:11434).
+Supports TWO modes of operation:
+1. LOCAL MODE: Uses local Ollama installation (http://localhost:11434)
+2. API MODE: Uses Claude models via Ollama's API compatibility layer
+
+Set OLLAMA_MODE=api to enable API mode (requires OLLAMA_API_KEY).
 """
 
 import os
@@ -13,12 +17,19 @@ from vl_rag_graph_rlm.types import ModelUsageSummary, UsageSummary
 
 
 class OllamaClient(BaseLM):
-    """Client for Ollama local LLM inference.
+    """Client for Ollama - supports both local inference and Claude API mode.
     
-    Requires Ollama running locally (default: http://localhost:11434).
-    Install from: https://ollama.com
+    LOCAL MODE (default):
+    - Requires Ollama running locally (default: http://localhost:11434)
+    - Install from: https://ollama.com
+    - No API keys needed
     
-    Typical models:
+    API MODE (Claude):
+    - Set OLLAMA_MODE=api and provide OLLAMA_API_KEY
+    - Uses Claude models through Ollama interface
+    - Acts like an API provider (not local inference)
+    
+    Typical local models:
     - llama3.2 (3B, fast)
     - llama3.1 (8B, good balance)
     - mistral (7B)
@@ -26,7 +37,7 @@ class OllamaClient(BaseLM):
     - deepseek-r1 (reasoning model)
     """
     
-    # Fallback chain: try smaller models if larger fail
+    # Local fallback chain: try smaller models if larger fail
     FALLBACK_MODELS = [
         "llama3.2",
         "llama3.1",
@@ -48,19 +59,21 @@ class OllamaClient(BaseLM):
         
         Args:
             model_name: Model name (default: from OLLAMA_MODEL env var, or llama3.2)
-            api_key: Not used (Ollama doesn't require API keys locally)
+            api_key: API key (used in API mode, from OLLAMA_API_KEY env var)
             temperature: Sampling temperature
             max_depth: RLM max recursion depth
             max_iterations: RLM max iterations
-            api_base: Ollama API URL (default: from OLLAMA_BASE_URL env var, or http://localhost:11434)
+            api_base: Ollama API URL (default: from OLLAMA_BASE_URL env var)
         """
         super().__init__(model_name=model_name or os.getenv("OLLAMA_MODEL", "llama3.2"), **kwargs)
         
+        self.mode = os.getenv("OLLAMA_MODE", "local").lower()
         self.model_name = model_name or os.getenv("OLLAMA_MODEL", "llama3.2")
         self.temperature = temperature
         self.max_depth = max_depth
         self.max_iterations = max_iterations
         self.api_base = api_base or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
         
         # Usage tracking
         self.model_call_counts: dict[str, int] = defaultdict(int)
@@ -69,7 +82,10 @@ class OllamaClient(BaseLM):
         self._last_usage: ModelUsageSummary | None = None
     
     def _check_connection(self) -> None:
-        """Check if Ollama is running."""
+        """Check if Ollama is running (local mode only)."""
+        if self.mode == "api":
+            return  # API mode doesn't need local connection check
+            
         import urllib.request
         import urllib.error
         
@@ -94,7 +110,7 @@ class OllamaClient(BaseLM):
         prompt: str | list[dict[str, Any]],
         model: Optional[str] = None,
     ) -> str:
-        """Make raw completion request to Ollama API."""
+        """Make raw completion request to Ollama API (local mode)."""
         import json
         import urllib.request
         import urllib.error
@@ -147,8 +163,79 @@ class OllamaClient(BaseLM):
         except Exception as e:
             raise RuntimeError(f"Ollama request failed: {e}")
     
+    def _api_completion(
+        self,
+        prompt: str | list[dict[str, Any]],
+        model: Optional[str] = None,
+    ) -> str:
+        """Make completion request using Anthropic SDK via Ollama's Anthropic compatibility layer.
+        
+        Ollama provides Anthropic API compatibility - it translates Anthropic API calls
+        to local/cloud models. The API key is required but ignored.
+        
+        Reference: https://docs.ollama.com/api/anthropic-compatibility
+        """
+        try:
+            import anthropic
+        except ImportError:
+            raise RuntimeError(
+                "Anthropic SDK required for Ollama API mode. "
+                "Install with: pip install anthropic"
+            )
+        
+        use_model = model or self.model_name
+        
+        # Build messages format
+        if isinstance(prompt, list):
+            messages = prompt
+        else:
+            messages = [{"role": "user", "content": prompt}]
+        
+        # Initialize Anthropic client pointing to Ollama's Anthropic-compatible endpoint
+        # API key is required but ignored by Ollama
+        client = anthropic.Anthropic(
+            base_url=self.api_base,  # e.g., http://localhost:11434
+            api_key=self.api_key or "ollama",  # Required but ignored
+            timeout=120.0,
+        )
+        
+        try:
+            start_time = time.time()
+            response = client.messages.create(
+                model=use_model,
+                max_tokens=4096,
+                temperature=self.temperature,
+                messages=messages,
+            )
+            
+            # Extract text from response
+            response_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    response_text += block.text
+            
+            # Track usage
+            duration = time.time() - start_time
+            input_tokens = response.usage.input_tokens if response.usage else 0
+            output_tokens = response.usage.output_tokens if response.usage else 0
+            
+            self.model_call_counts[use_model] += 1
+            self.model_input_tokens[use_model] += input_tokens
+            self.model_output_tokens[use_model] += output_tokens
+            
+            self._last_usage = ModelUsageSummary(
+                total_calls=1,
+                total_input_tokens=input_tokens,
+                total_output_tokens=output_tokens,
+            )
+            
+            return response_text
+            
+        except Exception as e:
+            raise RuntimeError(f"Ollama Anthropic API call failed: {e}")
+    
     def _track_usage(self, model: str, prompt: str, response: str, duration: float) -> None:
-        """Track usage statistics."""
+        """Track usage statistics (local mode)."""
         # Estimate tokens (rough approximation: 4 chars ≈ 1 token)
         input_tokens = len(prompt) // 4
         output_tokens = len(response) // 4
@@ -167,19 +254,27 @@ class OllamaClient(BaseLM):
         )
     
     def completion(self, prompt: str | list[dict[str, Any]], model: str | None = None) -> str:
-        """Generate completion with fallback model support."""
-        try:
-            return self._raw_completion(prompt, model)
-        except RuntimeError:
-            # Try fallback models
-            for fallback_model in self.FALLBACK_MODELS:
-                if fallback_model == self.model_name:
-                    continue
-                try:
-                    return self._raw_completion(prompt, model=fallback_model)
-                except RuntimeError:
-                    continue
-            raise RuntimeError("All Ollama models failed")
+        """Generate completion with mode-specific handling."""
+        if self.mode == "api":
+            # API mode: use Claude API
+            try:
+                return self._api_completion(prompt, model)
+            except RuntimeError:
+                raise RuntimeError("Claude API call failed")
+        else:
+            # Local mode: use Ollama local API
+            try:
+                return self._raw_completion(prompt, model)
+            except RuntimeError:
+                # Try fallback models
+                for fallback_model in self.FALLBACK_MODELS:
+                    if fallback_model == self.model_name:
+                        continue
+                    try:
+                        return self._raw_completion(prompt, model=fallback_model)
+                    except RuntimeError:
+                        continue
+                raise RuntimeError("All Ollama models failed")
     
     async def acompletion(self, prompt: str | list[dict[str, Any]], model: str | None = None, **kwargs) -> str:
         """Async completion (delegates to sync for simplicity)."""

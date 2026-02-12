@@ -444,13 +444,13 @@ vrlmrag --nebius <path>                 # Same as --provider nebius
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
-PROVIDER_HIERARCHY=modalresearch,sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
+PROVIDER_HIERARCHY=modalresearch,sambanova,nebius,ollama,groq,cerebras,zai,zenmux,openrouter,...
 
 # Provider API keys
 {PROVIDER}_API_KEY=...
 {PROVIDER}_API_KEY_FALLBACK=...   # Optional: fallback key (different account, same provider)
 {PROVIDER}_MODEL=...              # Optional: override default model
-{PROVIDER}_RECURSIVE_MODEL=...    # Optional: cheaper model for recursive calls
+{PROVIDER}_RECURSIVE_MODEL=...    # Optional: cheaper model for recursive calls (defaults to main model if not set)
 {PROVIDER}_FALLBACK_MODEL=...     # Optional: override fallback model for auto-retry
 
 # Provider-specific behavior
@@ -514,7 +514,7 @@ When `--provider` is omitted or set to `auto`, the system tries providers in
 `PROVIDER_HIERARCHY` order, skipping any without API keys. If a provider fails
 (rate limit, auth error, network), it automatically falls through to the next.
 
-Default order: `modalresearch → sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...`
+Default order: `modalresearch → sambanova → nebius → ollama → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → ...`
 
 This enables deploying the same codebase across environments — whichever
 providers have keys configured will be used automatically.

@@ -4,11 +4,43 @@ Version: 0.2.0 (Feb 12, 2026)
 
 ## Overview
 
-This folder contains comprehensive documentation for the **VL-RAG-Graph-RLM** (Vision-Language RAG Graph Recursive Language Model) framework — a unified multimodal document analysis system with **named persistent knowledge collections**, **accuracy-first retrieval**, and **17 LLM provider templates** with automatic fallback.
+This folder contains comprehensive documentation for the **VL-RAG-Graph-RLM** (Vision-Language RAG Graph Recursive Language Model) framework — a unified multimodal document analysis system with **named persistent knowledge collections**, **accuracy-first retrieval**, and **18 LLM provider templates** with automatic fallback.
 
 The system processes documents (PPTX, PDF, TXT, MD, Video, Audio) through a full 6-pillar pipeline: Qwen3-VL vision-language embeddings → hybrid RAG with RRF fusion → cross-attention reranking → knowledge graph extraction → recursive LLM reasoning → markdown report generation. All model loading uses **sequential load-use-free** memory management (peak ~6.7 GB on a 40-min video).
 
 ## What's New (v0.2.0 — Feb 12, 2026)
+
+### 🧪 Modal Research Provider (New!)
+**Free GLM-5 745B frontier inference** via Modal Research's OpenAI-compatible endpoint:
+- **Model:** `zai-org/GLM-5-FP8` — 745B parameters (44B active), MoE architecture, MIT license
+- **Endpoint:** `https://api.us-west-2.modal.direct/v1` — runs on 8×B200 GPUs via SGLang
+- **Performance:** 30-75 tok/s per user, frontier-class reasoning
+- **Status:** Experimental (free tier: 1 concurrent request, may have downtime)
+- **Get key:** https://modal.com/glm-5-endpoint
+
+```bash
+vrlmrag document.pptx --provider modalresearch
+# Or use auto mode — modalresearch is first in hierarchy
+vrlmrag document.pptx
+```
+
+### 🔑 Fallback API Key System (New!)
+**Multi-account support** with automatic fallback when primary keys fail:
+- **Pattern:** `{PROVIDER}_API_KEY_FALLBACK` — every provider supports this suffix
+- **Use cases:** Credit distribution, rate limit mitigation, account redundancy
+- **Four-tier resilience:** Primary key → Fallback key → Model fallback → Provider hierarchy
+
+```bash
+# Example: Two OpenRouter accounts
+OPENROUTER_API_KEY=sk-or-v1-primary-key
+OPENROUTER_API_KEY_FALLBACK=sk-or-v1-secondary-key
+```
+
+**Implementation:**
+- All OpenAI-compatible providers (14+ providers via `OpenAICompatibleClient`)
+- Anthropic/AnthropicCompatible clients
+- Gemini client
+- Fallback key promoted to primary after successful retry (session persistence)
 
 ### 🎯 Omni Model Fallback Chain (New!)
 Three-tier resilient multimodal processing for images, audio, and video:
@@ -156,12 +188,13 @@ All modes persist embeddings and knowledge graphs automatically:
 
 ### Provider Resilience
 
-17 providers with automatic multi-tier fallback:
-1. **Model fallback** — primary model fails → retry with fallback model (same provider)
-2. **Provider fallback** — both models fail → try next provider in hierarchy
-3. **z.ai three-tier** — Coding Plan endpoint → Normal endpoint → model fallback → hierarchy
+18 providers with automatic **four-tier fallback**:
+1. **API key fallback** — primary key fails → retry with `{PROVIDER}_API_KEY_FALLBACK` (same provider, different account)
+2. **Model fallback** — primary model fails → retry with fallback model (same provider, same key)
+3. **Provider fallback** — all retries fail → try next provider in hierarchy
+4. **z.ai five-tier** — Coding Plan endpoint → Normal endpoint → fallback key → model fallback → hierarchy
 
-Default hierarchy: `sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → ...`
+Default hierarchy: `modalresearch → sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → ...`
 
 ## Future Plans
 

@@ -75,6 +75,19 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
         "openai": "OPENAI_RECURSIVE_MODEL",
         "anthropic": "ANTHROPIC_RECURSIVE_MODEL",
         "gemini": "GOOGLE_RECURSIVE_MODEL",
+        "groq": "GROQ_RECURSIVE_MODEL",
+        "cerebras": "CEREBRAS_RECURSIVE_MODEL",
+        "sambanova": "SAMBANOVA_RECURSIVE_MODEL",
+        "nebius": "NEBIUS_RECURSIVE_MODEL",
+        "modalresearch": "MODAL_RESEARCH_RECURSIVE_MODEL",
+        "ollama": "OLLAMA_RECURSIVE_MODEL",
+        "azure_openai": "AZURE_OPENAI_RECURSIVE_MODEL",
+        "openai_compatible": "OPENAI_COMPATIBLE_RECURSIVE_MODEL",
+        "anthropic_compatible": "ANTHROPIC_COMPATIBLE_RECURSIVE_MODEL",
+        "mistral": "MISTRAL_RECURSIVE_MODEL",
+        "fireworks": "FIREWORKS_RECURSIVE_MODEL",
+        "together": "TOGETHER_RECURSIVE_MODEL",
+        "deepseek": "DEEPSEEK_RECURSIVE_MODEL",
     }
     env_var = env_var_map.get(provider, f"{provider.upper()}_RECURSIVE_MODEL")
     env_model = os.getenv(env_var)
@@ -95,6 +108,13 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
         "nebius": "zai-org/GLM-4.7-FP8",  # GLM 4.7 on Nebius Token Factory
         "modalresearch": "zai-org/GLM-5-FP8",  # Single model available on Modal Research
         "ollama": "llama3.2",
+        "azure_openai": "gpt-4o-mini",  # Defaults to main model if not set
+        "openai_compatible": "gpt-4o-mini",  # Defaults to main model if not set
+        "anthropic_compatible": "claude-3-5-haiku-20241022",  # Defaults to main model if not set
+        "mistral": "mistral-small-latest",  # Lightweight Mistral model
+        "fireworks": "accounts/fireworks/models/mixtral-8x22b-instruct",  # Efficient MoE
+        "together": "mistralai/Mixtral-8x22B-Instruct-v0.1",  # Efficient MoE
+        "deepseek": "deepseek-chat",  # Defaults to main model
     }
     return hardcoded_recursive.get(provider, primary_model)
 

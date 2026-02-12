@@ -32,11 +32,35 @@
 
 # VL-RAG-Graph-RLM
 
-**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
+**Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **18 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
 
 ## What's New (v0.2.0 — Feb 12, 2026)
 
-### � Collection Management (New!)
+### 🧪 Modal Research Provider (New!)
+**Free GLM-5 745B frontier inference** via Modal Research's OpenAI-compatible endpoint:
+- **Model:** `zai-org/GLM-5-FP8` — 745B MoE (44B active), MIT license
+- **Endpoint:** `https://api.us-west-2.modal.direct/v1` — runs on 8×B200 GPUs
+- **Performance:** 30-75 tok/s per user, frontier-class reasoning
+- **Status:** Experimental (1 concurrent request, may have downtime)
+- **Get key:** https://modal.com/glm-5-endpoint
+
+```bash
+vrlmrag ./docs  # modalresearch is first in auto hierarchy
+```
+
+### 🔑 Fallback API Key System (New!)
+**Multi-account support** with automatic fallback when primary keys fail:
+- **Pattern:** `{PROVIDER}_API_KEY_FALLBACK` — every provider supports this
+- **Four-tier resilience:** Primary key → Fallback key → Model fallback → Provider hierarchy
+- **Use cases:** Credit distribution, rate limit mitigation, account redundancy
+
+```bash
+# Two OpenRouter accounts for credit distribution
+OPENROUTER_API_KEY=sk-or-v1-primary-key
+OPENROUTER_API_KEY_FALLBACK=sk-or-v1-secondary-key
+```
+
+### 📦 Collection Management (New!)
 - **Export/Import** — `--collection-export PATH` and `--collection-import PATH` for portable tar.gz archives
 - **Collection Merge** — `--collection-merge SRC` merges one collection into another
 - **Collection Tagging** — `--collection-tag TAG` and `--collection-untag TAG` for organization
@@ -364,6 +388,7 @@ print(result.response)
 
 | Provider | Default Model | Context | Token Limits | Notes |
 |----------|--------------|---------|--------------|-------|
+| `modalresearch` | zai-org/GLM-5-FP8 | 128K | 1 concurrent | **Experimental** — free GLM-5 745B on 8×B200 |
 | `sambanova` | DeepSeek-V3.2 | 128K | **200K TPD** ⚠️ | Also: V3.1, gpt-oss-120b, Qwen3-235B, Llama-4-Maverick |
 | `nebius` | MiniMaxAI/MiniMax-M2.1 | 128K | Unlimited | Also: GLM-4.7-FP8, Nemotron-Ultra-253B, DeepSeek-R1 |
 | `openrouter` | minimax/minimax-m2.1 | varies | Per-model | 400+ models incl. GPT-5.3, Claude Opus 4.6, Gemini 3 |
@@ -485,7 +510,7 @@ vrlmrag ./docs -q "Summarize key findings"
 vrlmrag --show-hierarchy
 ```
 
-Default hierarchy: **sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → anthropic → ...**
+Default hierarchy: **modalresearch → sambanova → nebius → ollama → groq → cerebras → zai → zenmux → openrouter → gemini → deepseek → openai → anthropic → ...**
 
 If you configure `OPENAI_COMPATIBLE_API_KEY` or `ANTHROPIC_COMPATIBLE_API_KEY`, those custom SDK endpoints are automatically prepended as the highest-priority providers.
 
@@ -494,7 +519,7 @@ If a provider fails (rate limit, auth error, network issue), the system automati
 Customize the order in `.env`:
 
 ```bash
-PROVIDER_HIERARCHY=groq,cerebras,openrouter,zai,zenmux,nebius,sambanova
+PROVIDER_HIERARCHY=modalresearch,sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
 ```
 
 ### Configuration Profiles
@@ -532,13 +557,14 @@ cp .env.example .env
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
-PROVIDER_HIERARCHY=sambanova,nebius,groq,cerebras,zai,zenmux,openrouter,...
+PROVIDER_HIERARCHY=modalresearch,sambanova,nebius,ollama,groq,cerebras,zai,zenmux,openrouter,...
 
-# Per-provider: API key + optional model override
+# Per-provider: API key + optional fallback key + optional model override
 {PROVIDER}_API_KEY=your_key_here
-{PROVIDER}_MODEL=model-name           # optional
-{PROVIDER}_RECURSIVE_MODEL=model-name  # optional (for recursive calls)
-{PROVIDER}_FALLBACK_MODEL=model-name   # optional (auto-retry on error)
+{PROVIDER}_API_KEY_FALLBACK=your_second_key_here   # NEW: multi-account support
+{PROVIDER}_MODEL=model-name                        # optional
+{PROVIDER}_RECURSIVE_MODEL=model-name              # Optional: defaults to main model if not set
+{PROVIDER}_FALLBACK_MODEL=model-name               # optional (auto-retry on error)
 
 # Embedding Mode Toggle (mutually exclusive — first match wins)
 VRLMRAG_TEXT_ONLY=false           # true = text-only (~1.2 GB, offline)
@@ -696,7 +722,7 @@ client = get_client('openrouter')
 VLRAGGraphRLM(
     provider: str,              # Provider name (sambanova, nebius, openrouter, ...)
     model: str = None,          # Model name (auto-detected from env/defaults)
-    recursive_model: str = None,# Cheaper model for recursive sub-queries
+    recursive_model: str = None,# Defaults to main model if not set (cheaper model for recursive sub-queries)
     api_key: str = None,        # API key (or use env var)
     max_depth: int = 3,         # Maximum recursion depth
     max_iterations: int = 10,   # Max iterations per call
