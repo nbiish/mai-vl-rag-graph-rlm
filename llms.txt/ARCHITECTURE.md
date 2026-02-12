@@ -774,40 +774,27 @@ python -m vl_rag_graph_rlm.mcp_server
 
 ### MCP Client Configuration
 
-Add to your MCP client's config (e.g., Windsurf `mcp_config.json` or Claude Desktop `config.json`).
+**Streamlined Server:** 3 core tools, comprehensive defaults, minimal configuration.
 
-**Important:** Set `VRLMRAG_ROOT` to the path where you cloned the repo.
-The server loads `.env` from that directory so you never need to duplicate
-API keys into the MCP client config.
+### Quick Start
 
-```json
-{
-    "mcpServers": {
-        "vrlmrag": {
-            "command": "uvx",
-            "args": ["--from", "vl-rag-graph-rlm", "vrlmrag-mcp"],
-            "env": {
-                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
-                "VRLMRAG_PROVIDER": "auto",
-                "VRLMRAG_COLLECTIONS": "true"
-            }
-        }
-    }
-}
-```
-
-Alternative (if already installed globally via `pip install` or `uv pip install`):
+Add to your MCP client configuration (e.g., `~/.config/windsurf/mcp_config.json`):
 
 ```json
 {
     "mcpServers": {
         "vrlmrag": {
-            "command": "vrlmrag-mcp",
-            "args": [],
+            "command": "/Users/nbiish/.local/bin/uv",
+            "args": [
+                "run",
+                "--project",
+                "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm",
+                "python",
+                "-m",
+                "vl_rag_graph_rlm.mcp_server"
+            ],
             "env": {
-                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
-                "VRLMRAG_PROVIDER": "auto",
-                "VRLMRAG_COLLECTIONS": "true"
+                "VRLMRAG_ROOT": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm"
             }
         }
     }
@@ -914,17 +901,15 @@ The streamlined MCP server consolidates functionality into 3 unified tools:
 
 | Tool | Description | Key Parameters | Availability |
 |------|-------------|----------------|--------------|
-| `analyze` | **Universal document analysis** — Full VL-RAG pipeline with 4 quality modes | `input_path`, `query?`, `mode?`, `provider?`, `model?`, `output_path?` | Always |
-| `query_collection` | **Query named knowledge collections** — Persistent stores with blending support | `collection`, `query`, `mode?`, `provider?`, `model?` | Always |
-| `collection_manage` | **Unified collection management** — All collection operations via `action` parameter | `action`, `collection?`, `path?`, `query?`, `tags?`, `target_collection?` | If collections enabled |
+| `analyze` | **Comprehensive document analysis** — Full VL-RAG-Graph-RLM pipeline | `input_path`, `query?`, `mode?`, `provider?`, `model?`, `output_path?` | Always |
+| `query_collection` | **Query knowledge collections** — Persistent stores with blending | `collection`, `query`, `mode?`, `provider?`, `model?` | Always |
+| `collection_manage` | **Collection management** — All operations via `action` parameter | `action`, `collection?`, `path?`, `query?`, `tags?`, `target_collection?` | If collections enabled |
 
 **Tool Details:**
 
-- **`analyze`** — The primary tool for document analysis. Set `mode` to control quality:
-  - `mode="comprehensive"` (default) — All best features: multi-query, graph-augmented, deep RLM
-  - `mode="thorough"` — Deep analysis with graph augmentation
-  - `mode="balanced"` — Good quality/speed tradeoff
-  - `mode="fast"` — Quick results, minimal resources
+- **`analyze`** — Comprehensive document analysis by default. Use `mode` to adjust:
+  - `mode="comprehensive"` (default) — Full vision, audio, RAG, graph, recursive LLM
+  - `mode="fast"` — Quick search when speed is prioritized over depth
 
 - **`query_collection`** — Query persistent knowledge collections. Collections are created automatically on first query if they don't exist.
 
@@ -939,9 +924,6 @@ The streamlined MCP server consolidates functionality into 3 unified tools:
   - `action="tag"` — Add tags to collection
   - `action="search"` — Search collections by query/tags
 
-All tools with `provider?`/`model?` parameters default to the hierarchy
-system unless overridden per-call or via `VRLMRAG_*` env vars.
-
-**System Configuration:** Provider selection and local model settings are configured via `VRLMRAG_*` environment variables in the MCP client config, not exposed as tools. By default, all MCP instances use the API provider hierarchy with automatic fallback.
+All tools default to comprehensive analysis with API provider hierarchy.
 
 ## Environment Variables

@@ -111,34 +111,30 @@ async def analyze(
     ctx: Context,
     input_path: str,
     query: Optional[str] = None,
-    mode: str = "comprehensive",  
+    mode: str = "comprehensive",
     provider: Optional[str] = None,
     model: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
-    """Analyze documents with the full VL-RAG-Graph-RLM pipeline.
-    
-    Unified tool for document analysis with 4 quality modes:
-    - fast: Quick results (~1.2GB RAM, minimal depth)
-    - balanced: Good quality/speed tradeoff
-    - thorough: Deep analysis with multi-query + graph augmentation
-    - comprehensive: All best features enabled (default — maximum quality)
-    
-    The comprehensive mode automatically enables:
+    """Comprehensive document analysis using the full VL-RAG-Graph-RLM pipeline.
+
+    Default is comprehensive — full vision, audio, RAG, graph, and recursive LLM analysis.
+    Use mode='fast' for quick search when speed is prioritized over depth.
+
+    Comprehensive mode automatically enables:
     - Multi-query retrieval for broader recall
-    - Graph-augmented context expansion
-    - Deeper RLM recursion (depth=5)
-    - Higher iteration limits
-    - API provider hierarchy (auto mode)
-    
+    - Graph-augmented context expansion (3-hop traversal)
+    - Deep RLM recursion (depth=5, iterations=15)
+    - API provider hierarchy with auto-fallback
+
     Args:
         input_path: Path to file or folder to analyze
         query: Question to answer (auto-generated if not provided)
-        mode: Quality preset - fast, balanced, thorough, or comprehensive
+        mode: Analysis depth — comprehensive (default) or fast for quick search
         provider: LLM provider override (default: auto/hierarchy)
         model: Model name override
         output_path: Optional path to save markdown report
-        
+
     Returns:
         Analysis result with source attribution
     """
@@ -213,22 +209,22 @@ async def query_collection(
     ctx: Context,
     collection: str,
     query: str,
-    mode: str = "balanced",
+    mode: str = "comprehensive",
     provider: Optional[str] = None,
     model: Optional[str] = None,
 ) -> str:
-    """Query a named knowledge collection.
-    
-    Unified collection tool combining query, info, and management.
-    Collections persist embeddings and knowledge graphs for reuse.
-    
+    """Comprehensive knowledge collection querying.
+
+    Default is comprehensive — full RAG, graph, and recursive LLM analysis.
+    Use mode='fast' for quick search when speed is prioritized over depth.
+
     Args:
         collection: Collection name (creates if doesn't exist)
         query: Question to answer about the collection
-        mode: Quality preset - fast, balanced, thorough, comprehensive
+        mode: Analysis depth — comprehensive (default) or fast for quick search
         provider: LLM provider override
         model: Model name override
-        
+
     Returns:
         Answer with source attribution
     """

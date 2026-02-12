@@ -431,8 +431,8 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
 | `--rrf-dense-weight W` | | Weight for dense search in RRF fusion (default: 4.0) |
 | `--rrf-keyword-weight W` | | Weight for keyword search in RRF fusion (default: 1.0) |
 | `--multi-query` | | Generate sub-queries for broader recall |
-| `--profile {fast,balanced,thorough,comprehensive}` | | Configuration preset (default: balanced) |
-| `--comprehensive` | | Enable all best features (equivalent to --profile comprehensive) |
+| `--profile {fast,comprehensive}` | | Analysis depth — comprehensive (default) for full VL-RAG-Graph-RLM, or fast for quick search |
+| `--comprehensive` | | Explicitly enable comprehensive mode (redundant, this is the default) |
 | `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
 | `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
 | `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
@@ -501,29 +501,24 @@ PROVIDER_HIERARCHY=groq,cerebras,openrouter,zai,zenmux,nebius,sambanova
 
 Use preset configurations optimized for different use cases:
 
-| Profile | Speed | Quality | Best For |
-|---------|-------|---------|----------|
-| `fast` | ⚡ Fast | Good | Quick lookups, low resources (~1.2GB RAM) |
-| `balanced` | ⚖️ Balanced | Better | General use |
-| `thorough` | 🐢 Slower | Excellent | Research, deep analysis |
-| `comprehensive` | 🐢 Slowest | Maximum | **Default** — all features enabled, critical analysis |
+| Profile | Description |
+|---------|-------------|
+| `comprehensive` | **Default** — Full VL-RAG-Graph-RLM with multi-query, graph-augmented, deep RLM |
+| `fast` | Quick search when speed is prioritized over depth (~1.2GB RAM) |
 
 ```bash
-# Comprehensive mode is now default (no flags needed)
+# Default is comprehensive — full VL-RAG-Graph-RLM automatically enabled
 vrlmrag ./research-papers -q "What are the key findings?"
 
-# Use --profile or --comprehensive explicitly if desired
-vrlmrag ./docs --comprehensive -q "Deep analysis"
-
-# Fast mode for quick results
+# Fast mode for quick results when speed matters
 vrlmrag ./notes --profile fast -q "Quick summary"
 ```
 
-The `--comprehensive` flag automatically enables:
+The default comprehensive mode automatically enables:
 - Multi-query retrieval for broader recall
 - Graph-augmented context expansion (3 hops)
-- Deeper RLM reasoning (depth=5, iterations=15)
-- Verbose progress output
+- Deep RLM reasoning (depth=5, iterations=15)
+- API provider hierarchy with auto-fallback
 
 ## Environment Variables
 
@@ -752,21 +747,18 @@ Add to your MCP client config (e.g., `~/.config/windsurf/mcp_config.json`):
                 "vl_rag_graph_rlm.mcp_server"
             ],
             "env": {
-                "VRLMRAG_ROOT": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm",
-                "VRLMRAG_PROVIDER": "auto",
-                "VRLMRAG_COLLECTIONS": "true"
+                "VRLMRAG_ROOT": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm"
             }
         }
     }
 }
 ```
 
-**Required environment variables:**
-- `VRLMRAG_ROOT` — Path to the cloned repo (loads `.env` from there)
-- `VRLMRAG_PROVIDER` — `auto` uses the hierarchy system (recommended)
-- `VRLMRAG_COLLECTIONS` — `true` enables collection tools, `false` for reduced context
+**Optional overrides:**
+- `VRLMRAG_LOCAL=true` — Use local models instead of API hierarchy (default: false)
+- `VRLMRAG_COLLECTIONS=false` — Disable collection tools (default: true)
 
-**Note:** The server now uses a streamlined 3-tool design (previously 11+) for reduced context usage.
+**Note:** The server always uses comprehensive analysis (max_depth=5, max_iterations=15, multi-query, graph-augmented) with API provider hierarchy. Only local mode and collections are configurable.
 
 ## Documentation
 

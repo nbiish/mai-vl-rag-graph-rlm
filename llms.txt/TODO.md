@@ -184,6 +184,15 @@
 
 ## Completed (v0.1.x — Feb 2026)
 
+### Simplified User Interface (Feb 12, 2026)
+- [x] **Comprehensive is the default** — No flags needed for full VL-RAG-Graph-RLM
+- [x] **Simplified profile choices** — Only `comprehensive` (default) and `fast` (quick search)
+- [x] **Updated MCP tool descriptions** — "Comprehensive document analysis... Default is comprehensive"
+- [x] **Updated CLI help text** — "Analysis depth — comprehensive (default) for full VL-RAG-Graph-RLM, or fast for quick search"
+- [x] **MCP server uses comprehensive defaults** — max_depth=5, max_iterations=15, multi-query, graph-augmented
+- [x] **Minimal configuration exposed** — Only `VRLMRAG_LOCAL` and `VRLMRAG_COLLECTIONS` are configurable
+- [x] **Documentation updated** — README.md, ARCHITECTURE.md reflect simplified messaging
+
 ### API-Default Mode & Media Safety (Feb 11, 2026)
 - [x] **API mode is now the default** — local Qwen3-VL requires explicit `--local` flag or `VRLMRAG_LOCAL=true`
 - [x] **`--local` CLI flag**: Opt into local Qwen3-VL models (replaces old `--use-api` flag)

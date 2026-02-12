@@ -1,18 +1,18 @@
 """VL-RAG-Graph-RLM MCP Server.
 
-Exposes the full VL-RAG-Graph-RLM pipeline as MCP tools for use by
-LLM clients (Windsurf, Claude Desktop, etc.).
+Streamlined 3-tool server with comprehensive defaults:
+- analyze: Universal document analysis with 4 quality modes
+- query_collection: Query persistent knowledge collections  
+- collection_manage: Unified collection management
 
-By default, the server uses the provider hierarchy system to resolve
-the best available LLM provider. Users can override the provider,
-model, and prompt template via a settings.json file.
+Always uses comprehensive RAG (max_depth=5, max_iterations=15, multi-query,
+graph-augmented) with API provider hierarchy.
 
-Settings file location (checked in order):
-    1. $VRLMRAG_MCP_SETTINGS  (env var pointing to a JSON file)
-    2. <project_root>/.vrlmrag/mcp_settings.json
-    3. Built-in defaults (provider=auto, hierarchy system)
+Two optional overrides via env vars:
+    VRLMRAG_LOCAL=true      — Use local models instead of APIs
+    VRLMRAG_COLLECTIONS=false — Disable collection tools
 """
 
-from vl_rag_graph_rlm.mcp_server.server import mcp, main
+from vl_rag_graph_rlm.mcp_server.streamlined import mcp, main
 
 __all__ = ["mcp", "main"]

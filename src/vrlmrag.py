@@ -3148,13 +3148,12 @@ def main():
         "--profile",
         choices=["fast", "balanced", "thorough", "comprehensive"],
         default="comprehensive",
-        help="Configuration preset: fast, balanced, thorough, or comprehensive (default: comprehensive)",
+        help="Analysis depth — comprehensive (default) for full VL-RAG-Graph-RLM, or fast for quick search",
     )
 
     parser.add_argument(
         "--comprehensive", action="store_true",
-        help="Enable all best features (equivalent to --profile comprehensive). "
-             "Enables multi-query, graph-augmented retrieval, verbose output, and deep reasoning.",
+        help="Explicitly enable comprehensive mode (redundant, this is the default)",
     )
 
     parser.add_argument(
