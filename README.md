@@ -157,6 +157,35 @@ uv pip install -e ".[all]"
 
 Add to your MCP client (Windsurf, Claude Desktop, etc.):
 
+#### Simple Configuration (Recommended)
+
+Minimal setup — just point to your repo and the server finds `.env` automatically:
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "/Users/YOU/.local/bin/uv",
+            "args": [
+                "run",
+                "--project",
+                "/path/to/mai-vl-rag-graph-rlm",
+                "python",
+                "-m",
+                "vl_rag_graph_rlm.mcp_server"
+            ],
+            "env": {
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm"
+            }
+        }
+    }
+}
+```
+
+#### Verbose Configuration (Full Control)
+
+Override all settings explicitly:
+
 ```json
 {
     "mcpServers": {
@@ -172,12 +201,34 @@ Add to your MCP client (Windsurf, Claude Desktop, etc.):
             ],
             "env": {
                 "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
-                "VRLMRAG_COLLECTIONS": "true"
+                "VRLMRAG_PROVIDER": "auto",
+                "VRLMRAG_MODEL": null,
+                "VRLMRAG_TEMPLATE": null,
+                "VRLMRAG_MAX_DEPTH": "3",
+                "VRLMRAG_MAX_ITERATIONS": "10",
+                "VRLMRAG_TEMPERATURE": "0.0",
+                "VRLMRAG_COLLECTIONS": "true",
+                "VRLMRAG_COLLECTIONS_ROOT": null,
+                "VRLMRAG_LOG_LEVEL": "INFO"
             }
         }
     }
 }
 ```
+
+**Environment Variable Reference:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VRLMRAG_ROOT` | *required* | Path to repo — finds `.env` file |
+| `VRLMRAG_PROVIDER` | `auto` | Provider for MCP tools (auto uses hierarchy) |
+| `VRLMRAG_MODEL` | `null` | Model override (null = use provider default) |
+| `VRLMRAG_TEMPLATE` | `null` | Template shorthand (null = none) |
+| `VRLMRAG_MAX_DEPTH` | `3` | RLM recursion depth |
+| `VRLMRAG_MAX_ITERATIONS` | `10` | RLM iterations per call |
+| `VRLMRAG_TEMPERATURE` | `0.0` | LLM sampling temperature |
+| `VRLMRAG_COLLECTIONS` | `true` | Enable/disable collection tools |
+| `VRLMRAG_COLLECTIONS_ROOT` | `null` | Collections directory override |
+| `VRLMRAG_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 Set `VRLMRAG_COLLECTIONS: "false"` to hide collection tools and reduce token context.
 
