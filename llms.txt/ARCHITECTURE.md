@@ -146,7 +146,22 @@ embedding = embedder.embed_text("Machine learning uses statistical methods...")
 
 ### API Mode
 
-Uses `APIEmbeddingProvider` — OpenRouter for text embeddings + ZenMux omni VLM for image/video descriptions. Zero local GPU models.
+Uses `APIEmbeddingProvider` — OpenRouter for text embeddings + ZenMux omni models for image/video/audio descriptions. Zero local GPU models.
+
+**Three-Tier Omni Fallback Chain:**
+
+| Tier | Model | Provider | Supports |
+|------|-------|----------|----------|
+| **Primary** | `inclusionai/ming-flash-omni-preview` | ZenMux | text, image, audio, video |
+| **Secondary** | `gemini/gemini-3-flash-preview` | ZenMux | text, image, audio, video |
+| **Tertiary** | `google/gemini-3-flash-preview` | OpenRouter | text, image, audio, video |
+| **Legacy VLM** | `moonshotai/kimi-k2.5` | OpenRouter | text, image, video (no audio) |
+
+**Audio transcription** routes through the full omni chain: primary → secondary → tertiary. If all omni models fail, audio transcription returns a placeholder (legacy VLM doesn't support audio).
+
+**Image/video description** uses the full chain: primary → secondary → tertiary → legacy VLM.
+
+**Environment variables:** `VRLMRAG_OMNI_*` for primary/secondary/tertiary omni models, `VRLMRAG_VLM_FALLBACK_*` for legacy VLM. Backward compatible with old `VRLMRAG_VLM_*` variables.
 
 ### Multimodal Mode (Default)
 
@@ -449,19 +464,46 @@ VRLMRAG_TEXT_ONLY_MODEL=Qwen/Qwen3-Embedding-0.6B     # Text-only embedding mode
 VRLMRAG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B  # Multimodal embedding model
 VRLMRAG_RERANKER_MODEL=ms-marco-MiniLM-L-12-v2       # FlashRank reranker model
 VRLMRAG_EMBEDDING_MODEL=openai/text-embedding-3-small  # API embedding model (OpenRouter)
-VRLMRAG_VLM_MODEL=inclusionai/ming-flash-omni-preview # API VLM model (ZenMux omni)
 
-# API Embedding Provider (when VRLMRAG_USE_API=true)
-VRLMRAG_EMBEDDING_API_KEY=...     # Optional: override OPENROUTER_API_KEY
-VRLMRAG_EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
+# Omni Models (API mode multimodal processing — 3-tier fallback chain)
+VRLMRAG_OMNI_BASE_URL=https://zenmux.ai/api/v1
+VRLMRAG_OMNI_MODEL=inclusionai/ming-flash-omni-preview  # Primary omni (ZenMux)
+# VRLMRAG_OMNI_API_KEY=...          # Optional: override ZENMUX_API_KEY
 
-# API VLM Provider (when VRLMRAG_USE_API=true)
-VRLMRAG_VLM_API_KEY=...           # Optional: override ZENMUX_API_KEY
-VRLMRAG_VLM_BASE_URL=https://zenmux.ai/api/v1
+VRLMRAG_OMNI_FALLBACK_BASE_URL=https://zenmux.ai/api/v1
+VRLMRAG_OMNI_FALLBACK_MODEL=gemini/gemini-3-flash-preview  # Secondary omni (ZenMux)
+# VRLMRAG_OMNI_FALLBACK_API_KEY=... # Optional: override ZENMUX_API_KEY
+
+VRLMRAG_OMNI_FALLBACK_BASE_URL_2=https://openrouter.ai/api/v1
+VRLMRAG_OMNI_FALLBACK_MODEL_2=google/gemini-3-flash-preview  # Tertiary omni (OpenRouter)
+# VRLMRAG_OMNI_FALLBACK_API_KEY_2=...  # Optional: override OPENROUTER_API_KEY
+
+# Legacy VLM Fallback (images/video only — no audio support)
+VRLMRAG_VLM_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+VRLMRAG_VLM_FALLBACK_MODEL=moonshotai/kimi-k2.5
+# VRLMRAG_VLM_FALLBACK_API_KEY=...  # Optional: override OPENROUTER_API_KEY
 
 # HuggingFace token for downloading models (optional)
 HF_TOKEN=...
 ```
+
+### Omni Model Fallback Chain
+
+When `VRLMRAG_USE_API=true`, the system uses a three-tier omni model fallback chain for multimodal content (images, audio, video):
+
+| Tier | Env Var Pattern | Default Model | Supports | Provider |
+|------|-----------------|---------------|----------|----------|
+| **Primary** | `VRLMRAG_OMNI_*` | `inclusionai/ming-flash-omni-preview` | text, image, audio, video | ZenMux |
+| **Secondary** | `VRLMRAG_OMNI_FALLBACK_*` | `gemini/gemini-3-flash-preview` | text, image, audio, video | ZenMux |
+| **Tertiary** | `VRLMRAG_OMNI_FALLBACK_*_2` | `google/gemini-3-flash-preview` | text, image, audio, video | OpenRouter |
+| **Legacy VLM** | `VRLMRAG_VLM_FALLBACK_*` | `moonshotai/kimi-k2.5` | text, image, video | OpenRouter |
+
+**Fallback behavior:**
+- Audio transcription: primary → secondary → tertiary (legacy VLM doesn't support audio)
+- Image/video description: primary → secondary → tertiary → legacy VLM
+- All omni models assumed to support text, image, audio, and video inputs
+- Circuit breaker disables primary after 3 consecutive failures
+- Environment variables use `_API_KEY`, `_BASE_URL`, `_MODEL` suffix pattern consistently
 
 ### Provider Hierarchy
 

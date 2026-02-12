@@ -4,15 +4,18 @@ Provides a drop-in replacement for ``Qwen3VLEmbeddingProvider`` that
 uses **zero local GPU models**:
 
 - **Text embeddings** via OpenRouter (``openai/text-embedding-3-small``)
-- **Image/video descriptions** via ZenMux omni model (PRIMARY)
+- **Image/video/audio processing** via ZenMux omni model (PRIMARY)
   (``inclusionai/ming-flash-omni-preview``)
-- **Fallback VLM** via OpenRouter Kimi K2 if ZenMux fails
+- **Omni fallback** via ZenMux Gemini 3 Flash (SECONDARY omni)
+  (``gemini/gemini-3-flash-preview``) — supports text, image, audio, video
+- **VLM fallback** via OpenRouter Kimi K2 (TERTIARY — images/video only)
   (``moonshotai/kimi-k2``)
 
-The VLM uses a **fallback chain**: primary ZenMux → fallback OpenRouter →
-circuit-breaker disable.  ZenMux Ming omni is prioritized for video analysis
-but may encounter a known server-side ``audioTokens`` bug; the Kimi K2 fallback
-handles image descriptions when ZenMux is unavailable.
+The omni model is the primary multimodal processor and is assumed to always
+support: text, images, audio files, and video frames. If the primary omni
+fails, we fall back to a secondary omni model (Gemini 3 Flash) which also
+supports all four modalities. Only if both omnis fail do we fall back to
+Kimi K2 (which only supports images/video, not audio).
 
 Peak RAM: ~200 MB (no local model loading).
 
@@ -29,6 +32,7 @@ Optional overrides::
     VRLMRAG_VLM_BASE_URL=https://zenmux.ai/api/v1
     VRLMRAG_VLM_FALLBACK_MODEL=moonshotai/kimi-k2
     VRLMRAG_VLM_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+    VRLMRAG_OMNI_FALLBACK_MODEL=gemini/gemini-3-flash-preview
 """
 
 from __future__ import annotations
@@ -128,30 +132,78 @@ class APIEmbeddingProvider:
             max_retries=1,
         )
 
-        # VLM client (ZenMux omni) — for image/video descriptions
-        self._vlm_api_key = (
+        # Primary Omni client (ZenMux) — for image/video/audio processing
+        # Supports both old VRLMRAG_VLM_* and new VRLMRAG_OMNI_* variable names
+        self._omni_api_key = (
             vlm_api_key
+            or os.getenv("VRLMRAG_OMNI_API_KEY")
             or os.getenv("VRLMRAG_VLM_API_KEY")
             or os.getenv("ZENMUX_API_KEY", "")
         )
-        self._vlm_base_url = (
+        self._omni_base_url = (
             vlm_base_url
+            or os.getenv("VRLMRAG_OMNI_BASE_URL", DEFAULT_VLM_BASE_URL)
             or os.getenv("VRLMRAG_VLM_BASE_URL", DEFAULT_VLM_BASE_URL)
         )
-        self._vlm_model = (
+        self._omni_model = (
             vlm_model
+            or os.getenv("VRLMRAG_OMNI_MODEL", DEFAULT_VLM_MODEL)
             or os.getenv("VRLMRAG_VLM_MODEL", DEFAULT_VLM_MODEL)
         )
 
-        self._vlm_client: Optional[openai.OpenAI] = None
-        if self._vlm_api_key:
-            self._vlm_client = openai.OpenAI(
-                api_key=self._vlm_api_key,
-                base_url=self._vlm_base_url,
+        self._omni_client: Optional[openai.OpenAI] = None
+        if self._omni_api_key:
+            self._omni_client = openai.OpenAI(
+                api_key=self._omni_api_key,
+                base_url=self._omni_base_url,
                 timeout=httpx.Timeout(_VLM_TIMEOUT, connect=5.0),
                 max_retries=0,  # fail fast — circuit breaker handles retries
             )
-        # VLM fallback client (OpenRouter Kimi K2) — used when ZenMux fails
+
+        # Secondary Omni fallback client (ZenMux with Gemini 3 Flash)
+        # Uses same ZenMux API key but different model
+        self._omni_fallback_api_key = (
+            os.getenv("VRLMRAG_OMNI_FALLBACK_API_KEY")
+            or self._omni_api_key
+        )
+        self._omni_fallback_base_url = (
+            os.getenv("VRLMRAG_OMNI_FALLBACK_BASE_URL", self._omni_base_url)
+        )
+        self._omni_fallback_model = os.getenv(
+            "VRLMRAG_OMNI_FALLBACK_MODEL", "gemini/gemini-3-flash-preview"
+        )
+
+        self._omni_fallback_client: Optional[openai.OpenAI] = None
+        if self._omni_fallback_api_key and self._omni_fallback_model:
+            self._omni_fallback_client = openai.OpenAI(
+                api_key=self._omni_fallback_api_key,
+                base_url=self._omni_fallback_base_url,
+                timeout=httpx.Timeout(_VLM_TIMEOUT, connect=5.0),
+                max_retries=0,
+            )
+
+        # Tertiary Omni fallback client (OpenRouter with Gemini 3 Flash)
+        self._omni_fallback_api_key_2 = (
+            os.getenv("VRLMRAG_OMNI_FALLBACK_API_KEY_2")
+            or os.getenv("OPENROUTER_API_KEY", "")
+        )
+        self._omni_fallback_base_url_2 = (
+            os.getenv("VRLMRAG_OMNI_FALLBACK_BASE_URL_2", DEFAULT_VLM_FALLBACK_BASE_URL)
+        )
+        self._omni_fallback_model_2 = os.getenv(
+            "VRLMRAG_OMNI_FALLBACK_MODEL_2", "google/gemini-3-flash-preview"
+        )
+
+        self._omni_fallback_client_2: Optional[openai.OpenAI] = None
+        if self._omni_fallback_api_key_2 and self._omni_fallback_model_2:
+            self._omni_fallback_client_2 = openai.OpenAI(
+                api_key=self._omni_fallback_api_key_2,
+                base_url=self._omni_fallback_base_url_2,
+                timeout=httpx.Timeout(_VLM_TIMEOUT, connect=5.0),
+                max_retries=0,
+            )
+
+        # Legacy VLM fallback client (OpenRouter Kimi K2) — images/video only
         self._vlm_fallback_api_key = (
             os.getenv("VRLMRAG_VLM_FALLBACK_API_KEY")
             or os.getenv("OPENROUTER_API_KEY", "")
@@ -172,6 +224,12 @@ class APIEmbeddingProvider:
                 max_retries=0,
             )
 
+        # Legacy aliases for backward compatibility in method code
+        self._vlm_api_key = self._omni_api_key
+        self._vlm_base_url = self._omni_base_url
+        self._vlm_model = self._omni_model
+        self._vlm_client = self._omni_client
+
         self._vlm_consecutive_failures = 0
         self._vlm_disabled = False
         self._vlm_fallback_consecutive_failures = 0
@@ -182,11 +240,13 @@ class APIEmbeddingProvider:
 
         logger.info(
             "API embedding provider configured: embeddings=%s via %s, "
-            "vlm=%s via %s, fallback=%s via %s",
+            "omni=%s via %s, omni_fallback=%s, omni_fallback_2=%s, vlm_fallback=%s via %s",
             self._emb_model,
             self._emb_base_url,
-            self._vlm_model if self._vlm_client else "N/A",
-            self._vlm_base_url if self._vlm_client else "N/A",
+            self._omni_model if self._omni_client else "N/A",
+            self._omni_base_url if self._omni_client else "N/A",
+            self._omni_fallback_model if self._omni_fallback_client else "N/A",
+            self._omni_fallback_model_2 if self._omni_fallback_client_2 else "N/A",
             self._vlm_fallback_model if self._vlm_fallback_client else "N/A",
             self._vlm_fallback_base_url if self._vlm_fallback_client else "N/A",
         )
@@ -247,22 +307,29 @@ class APIEmbeddingProvider:
         combined = "\n\n".join(parts) if parts else ""
         return self._embed_texts([combined])[0]
 
+    # ── Omni Model Methods (Primary + Fallbacks) ──────────────────
+    # These methods implement the three-tier omni fallback chain:
+    #   1. Primary: ZenMux omni model (text/image/audio/video)
+    #   2. Secondary: ZenMux Gemini 3 Flash (text/image/audio/video)
+    #   3. Tertiary: OpenRouter Gemini 3 Flash (text/image/audio/video)
+    #   4. Legacy VLM: OpenRouter Kimi K2 (text/image/video only, no audio)
+
     def transcribe_audio(
         self,
         audio: Union[str, Any],
         instruction: Optional[str] = None,
     ) -> str:
-        """Transcribe audio using ZenMux omni model, fallback to placeholder.
+        """Transcribe audio using omni model chain: primary → secondary → tertiary.
 
-        The ZenMux Ming-flash-omni-preview model supports audio transcription
-        directly via the chat.completions API with audio file inputs.
+        The omni models support audio transcription directly via the chat.completions
+        API with audio file inputs. Falls back through all three omni tiers.
 
         Args:
             audio: Path to audio file (.wav, .mp3, etc.) or audio data
             instruction: Optional custom transcription instruction
 
         Returns:
-            Transcription text or placeholder if unavailable
+            Transcription text or placeholder if all omni models fail
         """
         # Convert audio to data URI if it's a file path
         audio_url = self._to_audio_url(audio)
@@ -298,11 +365,59 @@ class APIEmbeddingProvider:
                     self._vlm_disabled = True
                     logger.warning(f"Primary VLM disabled after {self._vlm_consecutive_failures} failures")
 
-        # Fallback: try OpenRouter (Kimi K2 doesn't support audio, but try anyway)
-        if self._vlm_fallback_client and not self._vlm_fallback_disabled:
-            logger.debug("Audio transcription fallback not available (Kimi K2 doesn't support audio)")
+        # Fallback: try secondary omni model (ZenMux Gemini 3 Flash) if configured
+        if self._omni_fallback_client and not self._vlm_disabled:
+            try:
+                logger.info(f"Trying omni fallback model: {self._omni_fallback_model}")
+                resp = self._omni_fallback_client.chat.completions.create(
+                    model=self._omni_fallback_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "input_audio", "input_audio": {"data": audio_url, "format": "wav"}},
+                            ],
+                        }
+                    ],
+                    max_tokens=1024,
+                )
+                transcript = resp.choices[0].message.content or "(no transcription)"
+                logger.info(f"Audio transcribed via omni fallback: {len(transcript)} chars")
+                return transcript
+            except Exception as e:
+                logger.warning(f"Omni fallback audio transcription failed: {e}")
 
-        return "(audio transcription unavailable — omni model failed)"
+        # Fallback: try tertiary omni model (OpenRouter Gemini 3 Flash) if configured
+        if self._omni_fallback_client_2 and not self._vlm_fallback_disabled:
+            try:
+                logger.info(f"Trying tertiary omni fallback model: {self._omni_fallback_model_2}")
+                resp = self._omni_fallback_client_2.chat.completions.create(
+                    model=self._omni_fallback_model_2,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "input_audio", "input_audio": {"data": audio_url, "format": "wav"}},
+                            ],
+                        }
+                    ],
+                    max_tokens=1024,
+                )
+                transcript = resp.choices[0].message.content or "(no transcription)"
+                logger.info(f"Audio transcribed via tertiary omni fallback: {len(transcript)} chars")
+                return transcript
+            except Exception as e:
+                logger.warning(f"Tertiary omni fallback audio transcription failed: {e}")
+
+        # Fallback to legacy VLM (Kimi K2) - NOTE: Does NOT support audio!
+        # This fallback is only reached if all omni models fail
+        logger.debug("Audio transcription: All omni models failed, Kimi K2 fallback unavailable for audio")
+
+        return "(audio transcription unavailable — all omni models failed)"
+
+    # ── Omni Model Helpers ──────────────────────────────────────
 
     @staticmethod
     def _to_audio_url(audio: Union[str, Any]) -> Optional[str]:
@@ -339,15 +454,17 @@ class APIEmbeddingProvider:
         )
         return [item.embedding for item in resp.data]
 
+    # ── Omni Model Methods ──────────────────────────────────────
+
     def _describe_image(self, image: Union[str, Any]) -> str:
-        """Describe image using ZenMux primary, fallback to OpenRouter Kimi K2."""
+        """Describe image using omni model chain: primary → secondary → tertiary → legacy VLM."""
         image_url = self._to_image_url(image)
 
-        # Try primary VLM (ZenMux omni)
-        if self._vlm_client and not self._vlm_disabled:
+        # Try primary omni (ZenMux)
+        if self._omni_client and not self._vlm_disabled:
             try:
-                resp = self._vlm_client.chat.completions.create(
-                    model=self._vlm_model,
+                resp = self._omni_client.chat.completions.create(
+                    model=self._omni_model,
                     messages=[
                         {
                             "role": "user",
@@ -366,14 +483,58 @@ class APIEmbeddingProvider:
                 if self._vlm_consecutive_failures >= _VLM_MAX_CONSECUTIVE_FAILURES:
                     self._vlm_disabled = True
                     logger.warning(
-                        "Primary VLM (ZenMux) disabled after %d failures: %s",
+                        "Primary omni (ZenMux) disabled after %d failures: %s",
                         self._vlm_consecutive_failures, e
                     )
                 else:
-                    logger.debug("Primary VLM failed (%d/%d): %s",
+                    logger.debug("Primary omni failed (%d/%d): %s",
                                  self._vlm_consecutive_failures, _VLM_MAX_CONSECUTIVE_FAILURES, e)
 
-        # Fallback to OpenRouter Kimi K2 if primary failed/disabled
+        # Fallback: try secondary omni model (ZenMux Gemini 3 Flash) if configured
+        if self._omni_fallback_client and not self._vlm_disabled:
+            try:
+                logger.info(f"Trying omni fallback for image: {self._omni_fallback_model}")
+                resp = self._omni_fallback_client.chat.completions.create(
+                    model=self._omni_fallback_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": _IMAGE_DESCRIBE_PROMPT},
+                                {"type": "image_url", "image_url": {"url": image_url}},
+                            ],
+                        }
+                    ],
+                    max_tokens=512,
+                )
+                logger.info(f"Image described via secondary omni: {self._omni_fallback_model}")
+                return resp.choices[0].message.content or "(no description)"
+            except Exception as e:
+                logger.warning(f"Secondary omni image description failed: {e}")
+
+        # Fallback: try tertiary omni (OpenRouter Gemini 3 Flash)
+        if self._omni_fallback_client_2 and not self._vlm_fallback_disabled:
+            try:
+                logger.info(f"Trying tertiary omni fallback for image: {self._omni_fallback_model_2}")
+                resp = self._omni_fallback_client_2.chat.completions.create(
+                    model=self._omni_fallback_model_2,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": _IMAGE_DESCRIBE_PROMPT},
+                                {"type": "image_url", "image_url": {"url": image_url}},
+                            ],
+                        }
+                    ],
+                    max_tokens=512,
+                )
+                logger.info(f"Image described via tertiary omni: {self._omni_fallback_model_2}")
+                return resp.choices[0].message.content or "(no description)"
+            except Exception as e:
+                logger.warning(f"Tertiary omni image description failed: {e}")
+
+        # Fallback: try legacy VLM (OpenRouter Kimi K2) - images/video only
         if self._vlm_fallback_client and not self._vlm_fallback_disabled:
             try:
                 resp = self._vlm_fallback_client.chat.completions.create(
@@ -409,7 +570,7 @@ class APIEmbeddingProvider:
     def _describe_video(
         self, video: Union[str, List[Any]], max_frames: int
     ) -> str:
-        """Describe video using ZenMux primary, fallback to OpenRouter Kimi K2."""
+        """Describe video using omni model chain: primary → secondary → tertiary → legacy VLM."""
         frames: List[str] = []
         if isinstance(video, list):
             for f in video[:max_frames]:
@@ -426,11 +587,11 @@ class APIEmbeddingProvider:
         for url in frames[:8]:
             content.append({"type": "image_url", "image_url": {"url": url}})
 
-        # Try primary VLM (ZenMux omni)
-        if self._vlm_client and not self._vlm_disabled:
+        # Try primary omni (ZenMux)
+        if self._omni_client and not self._vlm_disabled:
             try:
-                resp = self._vlm_client.chat.completions.create(
-                    model=self._vlm_model,
+                resp = self._omni_client.chat.completions.create(
+                    model=self._omni_model,
                     messages=[{"role": "user", "content": content}],
                     max_tokens=512,
                 )
@@ -441,14 +602,42 @@ class APIEmbeddingProvider:
                 if self._vlm_consecutive_failures >= _VLM_MAX_CONSECUTIVE_FAILURES:
                     self._vlm_disabled = True
                     logger.warning(
-                        "Primary VLM (ZenMux) disabled after %d failures: %s",
+                        "Primary omni (ZenMux) disabled after %d failures: %s",
                         self._vlm_consecutive_failures, e
                     )
                 else:
-                    logger.debug("Primary VLM failed (%d/%d): %s",
+                    logger.debug("Primary omni failed (%d/%d): %s",
                                  self._vlm_consecutive_failures, _VLM_MAX_CONSECUTIVE_FAILURES, e)
 
-        # Fallback to OpenRouter Kimi K2
+        # Fallback: try secondary omni model (ZenMux Gemini 3 Flash) if configured
+        if self._omni_fallback_client and not self._vlm_disabled:
+            try:
+                logger.info(f"Trying omni fallback for video: {self._omni_fallback_model}")
+                resp = self._omni_fallback_client.chat.completions.create(
+                    model=self._omni_fallback_model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=512,
+                )
+                logger.info(f"Video described via secondary omni: {self._omni_fallback_model}")
+                return resp.choices[0].message.content or "(no description)"
+            except Exception as e:
+                logger.warning(f"Secondary omni video description failed: {e}")
+
+        # Fallback: try tertiary omni (OpenRouter Gemini 3 Flash)
+        if self._omni_fallback_client_2 and not self._vlm_fallback_disabled:
+            try:
+                logger.info(f"Trying tertiary omni fallback for video: {self._omni_fallback_model_2}")
+                resp = self._omni_fallback_client_2.chat.completions.create(
+                    model=self._omni_fallback_model_2,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=512,
+                )
+                logger.info(f"Video described via tertiary omni: {self._omni_fallback_model_2}")
+                return resp.choices[0].message.content or "(no description)"
+            except Exception as e:
+                logger.warning(f"Tertiary omni video description failed: {e}")
+
+        # Fallback: try legacy VLM (OpenRouter Kimi K2) - images/video only
         if self._vlm_fallback_client and not self._vlm_fallback_disabled:
             try:
                 resp = self._vlm_fallback_client.chat.completions.create(

@@ -10,6 +10,15 @@ The system processes documents (PPTX, PDF, TXT, MD, Video, Audio) through a full
 
 ## What's New (v0.2.0 — Feb 12, 2026)
 
+### 🎯 Omni Model Fallback Chain (New!)
+Three-tier resilient multimodal processing for images, audio, and video:
+- **Primary:** ZenMux `inclusionai/ming-flash-omni-preview` — text, image, audio, video
+- **Secondary:** ZenMux `gemini/gemini-3-flash-preview` — fallback for all modalities
+- **Tertiary:** OpenRouter `google/gemini-3-flash-preview` — final omni fallback
+- **Legacy VLM:** OpenRouter `moonshotai/kimi-k2.5` — images/video only (no audio)
+
+Audio transcription now routes through the full omni chain — no more silent failures when the primary omni model is unavailable.
+
 ### 📦 Collection Management (New!)
 - **Export/Import** — `--collection-export PATH` and `--collection-import PATH` for portable tar.gz archives
 - **Collection Merge** — `--collection-merge SRC` merges one collection into another

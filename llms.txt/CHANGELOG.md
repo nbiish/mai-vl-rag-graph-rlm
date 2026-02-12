@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-02-12
 
+### Omni Model Fallback Chain (New!)
+Three-tier resilient multimodal processing for images, audio, and video:
+- **Primary Omni:** ZenMux `inclusionai/ming-flash-omni-preview` — handles text, images, audio, video
+- **Secondary Omni:** ZenMux `gemini/gemini-3-flash-preview` — fallback when primary fails
+- **Tertiary Omni:** OpenRouter `google/gemini-3-flash-preview` — final omni fallback
+- **Legacy VLM:** OpenRouter `moonshotai/kimi-k2.5` — images/video only (no audio support)
+
+**Implementation:**
+- New environment variable naming: `VRLMRAG_OMNI_*` for primary/secondary/tertiary omni models
+- Backward compatibility: Old `VRLMRAG_VLM_*` variables still work
+- Audio transcription routes through full omni chain: primary → secondary → tertiary
+- Image/video description uses full chain: primary → secondary → tertiary → legacy VLM
+- Consistent variable pattern: `VRLMRAG_OMNI_BASE_URL`, `VRLMRAG_OMNI_MODEL`, `VRLMRAG_OMNI_API_KEY` (plus `_FALLBACK` and `_FALLBACK_2` variants)
+
+**Files changed:**
+- `.env.example` — New organized "Omni Models" section with clear documentation
+- `.env` — Updated with new omni model configuration (preserves existing keys)
+- `src/vl_rag_graph_rlm/rag/api_embedding.py` — Updated `APIEmbeddingProvider` with new omni variable names and fallback chain
+
 ### Enhanced Document Processing
 - **PDF support** — PyMuPDF (`fitz`) extracts text and images from PDF documents
   - Handles multi-page PDFs with page-by-page processing

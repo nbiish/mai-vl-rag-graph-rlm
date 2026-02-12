@@ -528,7 +528,7 @@ Copy `.env.example` to `.env` and fill in your API keys:
 cp .env.example .env
 ```
 
-Key variables:
+### Quick Start Variables
 
 ```bash
 # Provider hierarchy (auto mode fallback order)
@@ -550,8 +550,48 @@ VRLMRAG_TEXT_ONLY_MODEL=Qwen/Qwen3-Embedding-0.6B      # Text-only embedding
 VRLMRAG_LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-2B  # Multimodal embedding
 VRLMRAG_RERANKER_MODEL=ms-marco-MiniLM-L-12-v2      # FlashRank reranker
 VRLMRAG_EMBEDDING_MODEL=openai/text-embedding-3-small  # API embedding (OpenRouter)
-VRLMRAG_VLM_MODEL=inclusionai/ming-flash-omni-preview # API VLM (ZenMux)
+```
 
+### Omni Model Configuration (New!)
+
+Omni models handle **all multimodal content**: images, audio files, video frames, and text. Three-tier fallback chain for resilience:
+
+| Tier | Variable | Default | Supports | Provider |
+|------|----------|---------|----------|----------|
+| **Primary** | `VRLMRAG_OMNI_MODEL` | `inclusionai/ming-flash-omni-preview` | text, image, audio, video | ZenMux |
+| **Secondary** | `VRLMRAG_OMNI_FALLBACK_MODEL` | `gemini/gemini-3-flash-preview` | text, image, audio, video | ZenMux |
+| **Tertiary** | `VRLMRAG_OMNI_FALLBACK_MODEL_2` | `google/gemini-3-flash-preview` | text, image, audio, video | OpenRouter |
+| **Legacy VLM** | `VRLMRAG_VLM_FALLBACK_MODEL` | `moonshotai/kimi-k2.5` | text, image, video (no audio) | OpenRouter |
+
+**Full variable list for omni models:**
+
+```bash
+# Primary Omni (ZenMux)
+VRLMRAG_OMNI_BASE_URL=https://zenmux.ai/api/v1
+VRLMRAG_OMNI_MODEL=inclusionai/ming-flash-omni-preview
+# Uses ZENMUX_API_KEY by default, or override with VRLMRAG_OMNI_API_KEY
+
+# Secondary Omni Fallback (ZenMux Gemini 3 Flash)
+VRLMRAG_OMNI_FALLBACK_BASE_URL=https://zenmux.ai/api/v1
+VRLMRAG_OMNI_FALLBACK_MODEL=gemini/gemini-3-flash-preview
+# Uses ZENMUX_API_KEY by default, or override with VRLMRAG_OMNI_FALLBACK_API_KEY
+
+# Tertiary Omni Fallback (OpenRouter Gemini 3 Flash)
+VRLMRAG_OMNI_FALLBACK_BASE_URL_2=https://openrouter.ai/api/v1
+VRLMRAG_OMNI_FALLBACK_MODEL_2=google/gemini-3-flash-preview
+# Uses OPENROUTER_API_KEY by default, or override with VRLMRAG_OMNI_FALLBACK_API_KEY_2
+
+# Legacy VLM Fallback (OpenRouter Kimi K2.5) — images/video only
+VRLMRAG_VLM_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+VRLMRAG_VLM_FALLBACK_MODEL=moonshotai/kimi-k2.5
+# Uses OPENROUTER_API_KEY by default, or override with VRLMRAG_VLM_FALLBACK_API_KEY
+```
+
+**Backward Compatibility:** Old `VRLMRAG_VLM_*` variables still work (e.g., `VRLMRAG_VLM_MODEL`, `VRLMRAG_VLM_BASE_URL`). New `VRLMRAG_OMNI_*` variables take precedence if set.
+
+### MCP Server Configuration
+
+```bash
 # MCP Server configuration (per-client via mcp_config.json env block)
 VRLMRAG_ROOT=/path/to/repo              # Required: finds .env file
 VRLMRAG_PROVIDER=auto                   # Provider for MCP tools
