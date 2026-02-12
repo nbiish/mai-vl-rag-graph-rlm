@@ -905,11 +905,36 @@ def run_analysis(
         )
     elif use_api and HAS_API_EMBEDDING:
         print("\n[2/6] Loading API-based embedding (OpenRouter + ZenMux omni)...")
-        embedder = create_api_embedder()
-        embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
-        vlm_model = os.getenv("VRLMRAG_VLM_MODEL", "inclusionai/ming-flash-omni-preview")
-        print(f"  Embedding model: {embedding_model_name}")
-        print(f"  Omni VLM model:  {vlm_model}")
+        try:
+            embedder = create_api_embedder()
+            embedding_model_name = os.getenv("VRLMRAG_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+            vlm_model = os.getenv("VRLMRAG_VLM_MODEL", "inclusionai/ming-flash-omni-preview")
+            print(f"  Embedding model: {embedding_model_name}")
+            print(f"  Omni VLM model:  {vlm_model}")
+        except Exception as e:
+            print(f"\n[ERROR] API embedding failed: {e}")
+            if HAS_QWEN3VL:
+                print(f"\n[recovery] Falling back to local Qwen3-VL embeddings...")
+                print(f"[recovery] To use offline mode explicitly, run with --offline flag.")
+                # Switch to local mode
+                use_api = False
+                text_only = False
+                _lock_ctx = local_model_lock(embedding_model_name, description="CLI run_analysis (Qwen3-VL fallback)")
+                _lock_ctx.__enter__()
+                import torch
+                device = "mps" if torch.backends.mps.is_available() else "cpu"
+                print(f"\n[2/6] Loading Qwen3-VL Embedding model ({device})...")
+                embedder = create_qwen3vl_embedder(
+                    model_name=embedding_model_name, device=device
+                )
+                print(f"  Embedding dim: {embedder.embedding_dim}")
+            else:
+                print(f"\n[FATAL] Cannot proceed — no embedding provider available.")
+                print(f"        API embedding failed and local Qwen3-VL is not installed.")
+                print(f"\n        To fix this:")
+                print(f"          1. Set valid OPENROUTER_API_KEY in .env for API mode")
+                print(f"          2. Or install local models: pip install torch transformers qwen-vl-utils")
+                sys.exit(1)
 
         storage_file = str(store_dir / "embeddings.json")
 
@@ -2436,6 +2461,7 @@ def main():
             "examples:\n"
             "  vrlmrag presentation.pptx                           # API mode (default)\n"
             "  vrlmrag --local presentation.pptx                   # local Qwen3-VL models\n"
+            "  vrlmrag --offline presentation.pptx               # offline mode (no APIs)\n"
             "  vrlmrag --provider sambanova presentation.pptx      # explicit provider\n"
             "  vrlmrag --provider nebius document.pdf -o report.md  # with output\n"
             "  vrlmrag ./docs -q 'Summarize key findings'          # auto + query\n"
@@ -2454,15 +2480,29 @@ def main():
             "  vrlmrag -c research --collection-info            # show collection details\n"
             "  vrlmrag -c research --collection-delete          # delete a collection\n"
             "\n"
+            "model upgrade / refresh workflows:\n"
+            "  vrlmrag ./docs --reindex                          # re-embed all docs with new model\n"
+            "  vrlmrag ./docs --rebuild-kg                       # regenerate KG with current RLM\n"
+            "  vrlmrag ./docs --reindex --rebuild-kg             # full refresh: embeddings + KG\n"
+            "  vrlmrag -c research --reindex                     # reindex a collection\n"
+            "\n"
             "interactive mode:\n"
             "  Loads VL models once, then lets you query continuously and add more\n"
             "  documents without reloading. Knowledge graph persists across queries.\n"
             "  Commands: /add <path>  /kg  /stats  /save  /help  /quit\n"
             "\n"
+            "offline mode:\n"
+            "  Use --offline when no API providers are available. Uses local Qwen3-VL\n"
+            "  embeddings. Video/audio processing REQUIRES API mode and will fail.\n"
+            "\n"
             "provider hierarchy (auto mode):\n"
             "  When --provider is omitted, providers are tried in PROVIDER_HIERARCHY order.\n"
             "  Default: sambanova → nebius → groq → cerebras → zai → zenmux → ...\n"
             "  Customize in .env: PROVIDER_HIERARCHY=groq,cerebras,openrouter,...\n"
+            "\n"
+            "video/audio safety:\n"
+            "  Video/audio files FORCE API mode — local vision models are blocked.\n"
+            "  Attempting video with --local or --offline will fail with a helpful error.\n"
             "\n"
             "backward-compatible aliases:\n"
             "  vrlmrag --samba-nova presentation.pptx\n"
@@ -2545,13 +2585,32 @@ def main():
              "Default is API mode. Local mode is blocked for video/audio files.",
     )
 
-    # Backward-compatible hidden alias
-    parser.add_argument("--use-api", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="Force offline mode — uses local Qwen3-VL embeddings when API providers unavailable. "
+             "WARNING: Video/audio processing requires API mode and will fail in offline mode.",
+    )
 
     parser.add_argument(
         "--text-only", action="store_true",
         default=os.environ.get("VRLMRAG_TEXT_ONLY", "").lower() in ("true", "1", "yes"),
         help="Use lightweight text-only embeddings — skips image/video (env: VRLMRAG_TEXT_ONLY)",
+    )
+
+    # ── Model upgrade / refresh flags ─────────────────────────────────
+    parser.add_argument(
+        "--reindex", action="store_true",
+        help="Force re-embedding of all documents — bypasses cache, rebuilds vector store with current model",
+    )
+
+    parser.add_argument(
+        "--rebuild-kg", action="store_true",
+        help="Regenerate knowledge graph with current RLM model — re-extracts entities/relationships",
+    )
+
+    parser.add_argument(
+        "--model-compare", metavar="OLD_MODEL",
+        help="Compare embeddings: run query with both OLD_MODEL and current model, show divergence",
     )
 
     # ── Collection arguments ──────────────────────────────────────────
@@ -2631,18 +2690,126 @@ def main():
         provider = "nebius"
         input_path = args.nebius
 
-    # ── Compute use_api from --local flag ─────────────────────────────
-    # Default: API mode (use_api=True). --local opts into local models.
-    # --use-api is a backward-compatible alias (API is already default).
-    use_api = not args.local
+    # ── Compute use_api from --local and --offline flags ────────────────
+    # Default: API mode (use_api=True). --local or --offline opts into local models.
+    # --offline forces local mode and disables all API provider calls.
+    use_api = not (args.local or args.offline)
+
+    # ── Handle --offline mode ───────────────────────────────────────────
+    if args.offline:
+        # In offline mode, we cannot process video/audio at all
+        if input_path:
+            _input_ext = Path(input_path).suffix.lower()
+            if _input_ext in _MEDIA_EXTENSIONS:
+                print(f"[ERROR] Video/audio processing requires API mode.")
+                print(f"        File: {input_path}")
+                print(f"        Offline mode only supports text documents (TXT, MD, PPTX, PDF).")
+                print(f"\n        To process this file, either:")
+                print(f"          1. Remove --offline and use API mode (default)")
+                print(f"          2. Set OPENROUTER_API_KEY and ZENMUX_API_KEY in .env")
+                sys.exit(1)
+        print("[offline] Running in offline mode — using local Qwen3-VL embeddings.")
+        print("[offline] API providers disabled. Text documents only.")
 
     # Block local models for media files — always force API for video/audio
-    if input_path and not use_api:
+    if input_path and not use_api and not args.offline:
         _input_ext = Path(input_path).suffix.lower()
         if _input_ext in _MEDIA_EXTENSIONS:
             print(f"[safety] Local models are blocked for media files ({_input_ext}).")
             print(f"         Forcing API mode to prevent system overload.")
             use_api = True
+
+    # ── Handle --reindex / --rebuild-kg flags ───────────────────────────
+    if args.reindex or args.rebuild_kg:
+        from pathlib import Path as _Path
+        _store_path = _Path(input_path)
+        if _store_path.is_file():
+            _store_dir = _store_path.parent / ".vrlmrag_store"
+        else:
+            _store_dir = _store_path / ".vrlmrag_store"
+        
+        if args.reindex:
+            # Clear embeddings to force re-processing
+            _emb_file = _store_dir / "embeddings.json"
+            _text_emb_file = _store_dir / "embeddings_text.json"
+            _manifest_file = _store_dir / "manifest.json"
+            if _emb_file.exists():
+                _emb_file.unlink()
+                print(f"[reindex] Cleared existing embeddings: {_emb_file}")
+            if _text_emb_file.exists():
+                _text_emb_file.unlink()
+                print(f"[reindex] Cleared existing text embeddings: {_text_emb_file}")
+            if _manifest_file.exists():
+                _manifest_file.unlink()
+                print(f"[reindex] Cleared manifest to force re-processing")
+            print("[reindex] Will re-embed all documents with current model...")
+        
+        if args.rebuild_kg:
+            # Clear knowledge graph to force re-extraction
+            _kg_file = _store_dir / "knowledge_graph.md"
+            if _kg_file.exists():
+                _kg_file.unlink()
+                print(f"[rebuild-kg] Cleared existing knowledge graph: {_kg_file}")
+            print("[rebuild-kg] Will regenerate KG with current RLM model...")
+        print()
+
+    # ── Handle collection reindex / rebuild-kg ──────────────────────────
+    if args.collection and (args.reindex or args.rebuild_kg):
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                print("Run 'vrlmrag --collection-list' to see available collections")
+                sys.exit(1)
+            
+            meta = load_collection_meta(cname)
+            slug = meta["name"]
+            coll_dir = _collection_dir(slug)
+            
+            if args.reindex:
+                # Clear collection embeddings
+                _emb_file = coll_dir / "embeddings.json"
+                _text_emb_file = coll_dir / "embeddings_text.json"
+                if _emb_file.exists():
+                    _emb_file.unlink()
+                    print(f"[reindex:{slug}] Cleared embeddings")
+                if _text_emb_file.exists():
+                    _text_emb_file.unlink()
+                    print(f"[reindex:{slug}] Cleared text embeddings")
+            
+            if args.rebuild_kg:
+                # Clear collection KG
+                _kg_file = coll_dir / "knowledge_graph.md"
+                if _kg_file.exists():
+                    _kg_file.unlink()
+                    print(f"[rebuild-kg:{slug}] Cleared knowledge graph")
+        
+        print("\n[collection] Store cleared. Re-adding documents to rebuild...")
+        # Now re-add all sources from the collection metadata
+        for cname in args.collection:
+            meta = load_collection_meta(cname)
+            sources = meta.get("sources", [])
+            if sources:
+                print(f"\n[collection:{cname}] Re-adding {len(sources)} source(s)...")
+                for src in sources:
+                    src_path = src["path"]
+                    if Path(src_path).exists():
+                        # Run collection add with the same path
+                        run_collection_add(
+                            collection_names=[cname],
+                            input_path=src_path,
+                            provider=provider,
+                            model=args.model,
+                            max_depth=args.max_depth,
+                            max_iterations=args.max_iterations,
+                            description=meta.get("description", ""),
+                            use_api=use_api,
+                            text_only=args.text_only,
+                        )
+                    else:
+                        print(f"  Warning: Source not found: {src_path}")
+            else:
+                print(f"[collection:{cname}] No sources recorded — nothing to reindex")
+        return
 
     # ── Collection dispatch ────────────────────────────────────────────
     if args.collection_list:

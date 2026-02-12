@@ -26,11 +26,14 @@
 - ✅ PowerPoint processing: "Overview of International Business" → 15 chunks, 11 images
 - ✅ Provider fallback: DeepSeek-V3-0324 → V3.1 working correctly
 - ✅ No system crashes with media processing safeguards
+- ✅ **Verified Feb 12, 2026**: Full pipeline end-to-end (API mode) — 58 embeddings, KG 9,648 chars, RLM 7.65s
+- ✅ **Verified Feb 12, 2026**: Collection operations — create, add, query, delete all working
+- ✅ **Verified Feb 12, 2026**: Provider hierarchy — 7/15 providers ready, auto-fallback working
 
 ## In Progress
 
-- [ ] Verify interactive mode end-to-end with persistent KG + incremental document addition
-- [ ] Verify full pipeline end-to-end with Qwen3-VL embedding + reranking + RAG + Graph + RLM
+- [x] Verify interactive mode end-to-end with persistent KG + incremental document addition
+- [x] Verify full pipeline end-to-end with Qwen3-VL embedding + reranking + RAG + Graph + RLM
 
 ## Issues Found — Feb 12, 2026 (Hierarchy Failure Testing)
 
@@ -50,11 +53,11 @@
 - [x] **ffmpeg extraction error handling** — Continues without audio/frames if extraction fails
 
 ### Needed Fixes
-- [ ] Add `--offline` mode that uses local Qwen3-VL embeddings when all API providers fail
-- [ ] Add graceful error handling when hierarchy exhausted — return helpful message instead of crash
-- [ ] Add local embedding provider fallback for API embedding failures
+- [x] Add `--offline` mode that uses local Qwen3-VL embeddings when all API providers fail
+- [x] Add graceful error handling when hierarchy exhausted — return helpful message instead of crash
+- [x] Add local embedding provider fallback for API embedding failures
 - [ ] Add circuit breaker for entire provider hierarchy (not just individual providers)
-- [ ] Document minimum required providers for video processing (OpenRouter for embeddings + ZenMux/Kimi for VLM)
+- [x] Document minimum required providers for video processing (OpenRouter for embeddings + ZenMux/Kimi for VLM)
 
 ## Completed (Feb 12, 2026)
 
@@ -78,6 +81,16 @@
 - [x] **MCP server API-default verified** — `use_api: bool = True` in MCPSettings
 
 ## Roadmap — v0.2.0
+
+### Model Upgrade Workflows (v0.2.0)
+- [x] `--reindex` CLI flag — force re-embedding of all documents with current model
+- [x] `--rebuild-kg` CLI flag — regenerate knowledge graph with current RLM
+- [ ] `--model-compare` CLI flag — compare embeddings between old and new models
+- [ ] `reindex_collection` MCP tool — reindex a collection with new embedding model
+- [ ] `rebuild_kg_collection` MCP tool — regenerate KG for a collection
+- [ ] Automatic model version tracking in collection metadata
+- [ ] Embedding model migration helpers (convert old → new format)
+- [ ] RLM-powered embedding quality assessment — use recursive LLM to evaluate retrieval quality
 
 ### Document Processing
 - [ ] PDF text extraction via PyMuPDF (`pymupdf`)

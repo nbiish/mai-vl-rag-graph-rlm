@@ -1182,6 +1182,144 @@ async def collection_delete_tool(ctx: Context, collection_name: str) -> str:
     return f"Collection not found: {collection_name}"
 
 
+async def collection_reindex(
+    ctx: Context,
+    collection_name: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Re-index a collection — re-embed all documents with current embedding model.
+
+    Clears existing embeddings and re-processes all source documents.
+    Useful when upgrading to a new embedding model or when the existing
+    index may be corrupted.
+
+    Args:
+        collection_name: Name of the collection to reindex.
+        provider: Override LLM provider for KG extraction (default: auto/hierarchy).
+        model: Override LLM model name.
+
+    Returns:
+        Summary of reindexing operation.
+    """
+    if not collection_exists(collection_name):
+        return f"Error: Collection '{collection_name}' does not exist."
+
+    meta = load_collection_meta(collection_name)
+    slug = meta["name"]
+    coll_dir = _collection_dir(slug)
+    sources = meta.get("sources", [])
+
+    if not sources:
+        return f"Collection '{collection_name}' has no recorded sources — nothing to reindex."
+
+    # Clear embeddings
+    _emb_file = coll_dir / "embeddings.json"
+    _text_emb_file = coll_dir / "embeddings_text.json"
+    cleared = []
+    if _emb_file.exists():
+        _emb_file.unlink()
+        cleared.append("embeddings")
+    if _text_emb_file.exists():
+        _text_emb_file.unlink()
+        cleared.append("text embeddings")
+
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+
+    from vrlmrag import run_collection_add
+
+    # Re-add all sources
+    readded = 0
+    for src in sources:
+        src_path = src["path"]
+        if Path(src_path).exists():
+            run_collection_add(
+                collection_names=[collection_name],
+                input_path=src_path,
+                provider=eff_provider,
+                model=eff_model,
+                max_depth=settings.max_depth,
+                max_iterations=settings.max_iterations,
+                description=meta.get("description", ""),
+            )
+            readded += 1
+
+    meta = load_collection_meta(collection_name)
+    return (
+        f"Collection '{collection_name}' reindexed.\n"
+        f"- Cleared: {', '.join(cleared) if cleared else 'none'}\n"
+        f"- Re-added sources: {readded}/{len(sources)}\n"
+        f"- Current documents: {meta.get('document_count', 0)}\n"
+        f"- Current chunks: {meta.get('chunk_count', 0)}"
+    )
+
+
+async def collection_rebuild_kg(
+    ctx: Context,
+    collection_name: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Rebuild knowledge graph for a collection — regenerate KG with current RLM.
+
+    Clears the existing knowledge graph and re-extracts entities/relationships
+    from all documents using the current RLM model. Useful when the KG model
+    is upgraded or when the existing KG may be incomplete.
+
+    Args:
+        collection_name: Name of the collection to rebuild KG for.
+        provider: Override LLM provider (default: auto/hierarchy).
+        model: Override LLM model name.
+
+    Returns:
+        Summary of KG rebuild operation.
+    """
+    if not collection_exists(collection_name):
+        return f"Error: Collection '{collection_name}' does not exist."
+
+    meta = load_collection_meta(collection_name)
+    slug = meta["name"]
+    coll_dir = _collection_dir(slug)
+
+    # Clear existing KG
+    _kg_file = coll_dir / "knowledge_graph.md"
+    had_kg = _kg_file.exists()
+    if had_kg:
+        _kg_file.unlink()
+
+    # Rebuild KG by re-adding all sources (which triggers KG extraction)
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+
+    from vrlmrag import run_collection_add
+
+    sources = meta.get("sources", [])
+    readded = 0
+    for src in sources:
+        src_path = src["path"]
+        if Path(src_path).exists():
+            run_collection_add(
+                collection_names=[collection_name],
+                input_path=src_path,
+                provider=eff_provider,
+                model=eff_model,
+                max_depth=settings.max_depth,
+                max_iterations=settings.max_iterations,
+                description=meta.get("description", ""),
+            )
+            readded += 1
+
+    # Check new KG size
+    kg = collection_load_kg(slug)
+    return (
+        f"Collection '{collection_name}' KG rebuilt.\n"
+        f"- Previous KG existed: {had_kg}\n"
+        f"- Re-processed sources: {readded}/{len(sources)}\n"
+        f"- New KG size: {len(kg):,} chars"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Conditionally register collection tools at module level.
 # This MUST happen here (not in lifespan) so the tool list is correct
@@ -1193,7 +1331,9 @@ if _SETTINGS.collections_enabled:
     mcp.tool()(collection_list)
     mcp.tool()(collection_info)
     mcp.tool()(collection_delete_tool)
-    logger.info("Collection tools registered (5 tools)")
+    mcp.tool()(collection_reindex)
+    mcp.tool()(collection_rebuild_kg)
+    logger.info("Collection tools registered (7 tools)")
 else:
     logger.info("Collection tools disabled — set VRLMRAG_COLLECTIONS=true to enable")
 
