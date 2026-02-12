@@ -1,4 +1,14 @@
-# AINISH Coder Tooling Distribution - Git Ignore Patterns
+# Large media files (examples)
+examples/*.mp4
+examples/*.avi
+examples/*.mov
+examples/*.mkv
+examples/*.webm
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
 # PlatformIO ignore patterns
 
 # ai pair programmer files
