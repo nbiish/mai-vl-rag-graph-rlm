@@ -2,6 +2,31 @@
 
 > Keep tasks atomic and testable.
 
+## Summary — Feb 12, 2026 Session
+
+**Session Focus**: ZenMux Omni Model Debugging, VLM Fallback Chain, Provider Hierarchy Verification, Video Processing Safeguards
+
+### Key Accomplishments
+1. **MODELS.md created** — 342 OpenRouter + 100 ZenMux models documented, sorted by release date
+2. **VLM Fallback implemented** — ZenMux Ming omni → OpenRouter Kimi K2.5 fallback chain with circuit breaker
+3. **Provider hierarchy tested** — 7/15 providers ready, verified fallback behavior on failure
+4. **Video processing safeguards** — Critical try-except wrapper in `_process_media()` prevents system crashes
+5. **API-default mode confirmed** — CLI and MCP server both default to API mode, `--local` flag for opt-in
+
+### Files Modified
+- `src/vl_rag_graph_rlm/rag/api_embedding.py` — VLM fallback chain, Kimi K2.5 as fallback
+- `src/vrlmrag.py` — Critical safety wrapper in `_process_media()` (lines 428-531)
+- `.env` — VLM fallback model configuration
+- `.env.example` — Documentation updates
+- `MODELS.md` — New comprehensive model documentation
+- `llms.txt/TODO.md` — This file
+
+### Test Results
+- ✅ Video processing: Spectrograms video → 58 embeddings stored, query answered
+- ✅ PowerPoint processing: "Overview of International Business" → 15 chunks, 11 images
+- ✅ Provider fallback: DeepSeek-V3-0324 → V3.1 working correctly
+- ✅ No system crashes with media processing safeguards
+
 ## In Progress
 
 - [ ] Verify interactive mode end-to-end with persistent KG + incremental document addition
