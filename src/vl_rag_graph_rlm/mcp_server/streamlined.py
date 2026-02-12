@@ -45,13 +45,12 @@ else:
 
 # Imports
 from vl_rag_graph_rlm import VLRAGGraphRLM
-from vl_rag_graph_rlm.clients.hierarchy import get_available_providers, resolve_auto_provider
+from vl_rag_graph_rlm.clients.hierarchy import get_available_providers
 from vl_rag_graph_rlm.collections import (
     collection_exists, create_collection, load_collection_meta,
     list_collections as _list_collections, _collection_dir,
 )
 from vl_rag_graph_rlm.mcp_server.settings import MCPSettings, load_settings
-from vl_rag_graph_rlm.local_model_lock import lock_status
 
 logger = logging.getLogger("vl_rag_graph_rlm.mcp_server")
 _SETTINGS = load_settings()
@@ -389,38 +388,6 @@ async def collection_manage(
         return "\n".join(lines)
     
     return f"Unknown action: {action}. Use: add, list, info, delete, export, import, merge, tag, search"
-
-
-@mcp.tool()
-async def system_status(ctx: Context) -> str:
-    """Check system status including providers and local model lock.
-    
-    Returns:
-        Provider availability and local model lock status
-    """
-    lines = ["# VL-RAG-Graph-RLM System Status", ""]
-    
-    # Provider hierarchy
-    available = get_available_providers()
-    lines.append(f"**Available providers:** {', '.join(available) if available else 'None'}")
-    lines.append("")
-    
-    # Lock status
-    status = lock_status()
-    if status["locked"]:
-        lines.extend([
-            "**Local Model Lock: HELD**",
-            f"- Model: {status['model_id']}",
-            f"- PID: {status['holder_pid']}",
-            f"- Since: {status['acquired_at']}",
-        ])
-    else:
-        lines.append("**Local Model Lock: FREE**")
-    
-    lines.append("")
-    lines.append("Use `mode='comprehensive'` for maximum analysis quality.")
-    
-    return "\n".join(lines)
 
 
 # Entry point

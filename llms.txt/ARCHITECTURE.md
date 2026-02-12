@@ -787,7 +787,9 @@ API keys into the MCP client config.
             "command": "uvx",
             "args": ["--from", "vl-rag-graph-rlm", "vrlmrag-mcp"],
             "env": {
-                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm"
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
+                "VRLMRAG_PROVIDER": "auto",
+                "VRLMRAG_COLLECTIONS": "true"
             }
         }
     }
@@ -803,7 +805,9 @@ Alternative (if already installed globally via `pip install` or `uv pip install`
             "command": "vrlmrag-mcp",
             "args": [],
             "env": {
-                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm"
+                "VRLMRAG_ROOT": "/path/to/mai-vl-rag-graph-rlm",
+                "VRLMRAG_PROVIDER": "auto",
+                "VRLMRAG_COLLECTIONS": "true"
             }
         }
     }
@@ -814,7 +818,7 @@ Alternative (if already installed globally via `pip install` or `uv pip install`
 
 The server finds the codebase root (and its `.env`) in this order:
 
-1. **`VRLMRAG_ROOT` env var** — set in MCP client config; always works, even via `uvx`
+1. **`VRLMRAG_ROOT` env var** — set in MCP client config; always works, even via `uv`
 2. **`__file__`-based walk** — works for editable / local `pip install -e .` installs
 3. **CWD fallback** — if the server is started from the repo directory
 
@@ -888,7 +892,7 @@ To reduce token context for the LLM when collections aren't needed:
 }
 ```
 
-With `VRLMRAG_COLLECTIONS=false`, the server exposes only 5 core tools instead of 10. The setting takes effect at server startup — restart the MCP server after changing it.
+With `VRLMRAG_COLLECTIONS=false`, the server exposes only 2 core tools instead of 3. The setting takes effect at server startup — restart the MCP server after changing it.
 
 ### Available Templates
 
@@ -904,24 +908,40 @@ With `VRLMRAG_COLLECTIONS=false`, the server exposes only 5 core tools instead o
 | `gemini-flash` | gemini | gemini-1.5-flash |
 | `deepseek-chat` | deepseek | deepseek-chat |
 
-### MCP Tools Reference
+### MCP Tools Reference (Streamlined — 3 Tools)
+
+The streamlined MCP server consolidates functionality into 3 unified tools:
 
 | Tool | Description | Key Parameters | Availability |
 |------|-------------|----------------|--------------|
-| `query_document` | Query a document/folder via full VL-RAG pipeline (multimodal) | `input_path`, `query`, `provider?`, `model?` | Always |
-| `query_text_document` | Query a document via text-only RAG pipeline | `input_path`, `query`, `provider?`, `model?` | Always |
-| `run_text_only_cli` | Execute CLI `--text-only` command via subprocess | `input_path`, `query?`, `provider?`, `model?` | Always |
-| `analyze_document` | Run full 6-pillar analysis → markdown report | `input_path`, `query?`, `provider?`, `model?`, `output_path?` | Always |
-| `list_providers` | List providers and API key status | (none) | Always |
-| `show_hierarchy` | Show provider fallback hierarchy | (none) | Always |
-| `show_settings` | Show current MCP server settings | (none) | Always |
-| `collection_add` | Add documents to a named collection | `collection_name`, `input_path`, `description?` | If collections enabled |
-| `collection_query` | Query one or more collections (blendable) | `query`, `collection_names`, `provider?`, `model?` | If collections enabled |
-| `collection_list` | List all available collections | (none) | If collections enabled |
-| `collection_info` | Get detailed info about a collection | `collection_name` | If collections enabled |
-| `collection_delete_tool` | Delete a collection permanently | `collection_name` | If collections enabled |
+| `analyze` | **Universal document analysis** — Full VL-RAG pipeline with 4 quality modes | `input_path`, `query?`, `mode?`, `provider?`, `model?`, `output_path?` | Always |
+| `query_collection` | **Query named knowledge collections** — Persistent stores with blending support | `collection`, `query`, `mode?`, `provider?`, `model?` | Always |
+| `collection_manage` | **Unified collection management** — All collection operations via `action` parameter | `action`, `collection?`, `path?`, `query?`, `tags?`, `target_collection?` | If collections enabled |
+
+**Tool Details:**
+
+- **`analyze`** — The primary tool for document analysis. Set `mode` to control quality:
+  - `mode="comprehensive"` (default) — All best features: multi-query, graph-augmented, deep RLM
+  - `mode="thorough"` — Deep analysis with graph augmentation
+  - `mode="balanced"` — Good quality/speed tradeoff
+  - `mode="fast"` — Quick results, minimal resources
+
+- **`query_collection`** — Query persistent knowledge collections. Collections are created automatically on first query if they don't exist.
+
+- **`collection_manage`** — All collection operations unified:
+  - `action="add"` — Add documents at `path` to `collection`
+  - `action="list"` — List all collections
+  - `action="info"` — Show collection details
+  - `action="delete"` — Remove collection
+  - `action="export"` — Export to tar.gz
+  - `action="import"` — Import from tar.gz
+  - `action="merge"` — Merge collections
+  - `action="tag"` — Add tags to collection
+  - `action="search"` — Search collections by query/tags
 
 All tools with `provider?`/`model?` parameters default to the hierarchy
-system unless overridden per-call, via `mcp_settings.json`, or via `VRLMRAG_*` env vars.
+system unless overridden per-call or via `VRLMRAG_*` env vars.
+
+**System Configuration:** Provider selection and local model settings are configured via `VRLMRAG_*` environment variables in the MCP client config, not exposed as tools. By default, all MCP instances use the API provider hierarchy with automatic fallback.
 
 ## Environment Variables

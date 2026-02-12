@@ -730,6 +730,44 @@ pip install torch transformers>=5.1.0 qwen-vl-utils>=0.0.14 pillow torchvision
 embedder = create_qwen3vl_embedder(device="cpu")
 ```
 
+## MCP Server
+
+The MCP server exposes VL-RAG-Graph-RLM as tools for LLM clients (Windsurf, Claude Desktop, etc.).
+
+### Configuration
+
+Add to your MCP client config (e.g., `~/.config/windsurf/mcp_config.json`):
+
+```json
+{
+    "mcpServers": {
+        "vrlmrag": {
+            "command": "/Users/nbiish/.local/bin/uv",
+            "args": [
+                "run",
+                "--project",
+                "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm",
+                "python",
+                "-m",
+                "vl_rag_graph_rlm.mcp_server"
+            ],
+            "env": {
+                "VRLMRAG_ROOT": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm",
+                "VRLMRAG_PROVIDER": "auto",
+                "VRLMRAG_COLLECTIONS": "true"
+            }
+        }
+    }
+}
+```
+
+**Required environment variables:**
+- `VRLMRAG_ROOT` — Path to the cloned repo (loads `.env` from there)
+- `VRLMRAG_PROVIDER` — `auto` uses the hierarchy system (recommended)
+- `VRLMRAG_COLLECTIONS` — `true` enables collection tools, `false` for reduced context
+
+**Note:** The server now uses a streamlined 3-tool design (previously 11+) for reduced context usage.
+
 ## Documentation
 
 - **[README.md](README.md)** (this file): Quick start, CLI reference, API docs, MCP server
