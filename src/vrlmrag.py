@@ -216,10 +216,11 @@ def _detect_file_changes(
 class DocumentProcessor:
     """Process various document types for VL-RAG-Graph-RLM."""
 
-    def __init__(self, transcription_provider=None, use_api: bool = False):
+    def __init__(self, transcription_provider=None, use_api: bool = False, api_embedder=None):
         self.supported_extensions = {".txt", ".md", ".pdf", ".pptx", ".docx"} | _MEDIA_EXTENSIONS
         self.transcription_provider = transcription_provider
         self.use_api = use_api
+        self.api_embedder = api_embedder  # For ZenMux omni audio transcription in API mode
 
     def process_path(self, path: str) -> List[dict]:
         """Process a file or folder path."""
@@ -708,17 +709,31 @@ class DocumentProcessor:
 
             result["audio_path"] = audio_path
 
-            # --- Transcribe audio (local Parakeet) ---
+            # --- Transcribe audio ---
             transcript = ""
-            if audio_path and self.transcription_provider is not None:
-                try:
-                    print(f"  [media] Transcribing audio with Parakeet...")
-                    transcript = self.transcription_provider.transcribe(audio_path)
-                    if isinstance(transcript, dict):
-                        transcript = transcript.get("text", "")
-                    print(f"  [media] Transcript: {len(transcript)} chars")
-                except Exception as exc:
-                    print(f"  Warning: Parakeet transcription failed: {exc}")
+            if audio_path:
+                if self.use_api and self.api_embedder is not None:
+                    # API mode: Use ZenMux omni model for audio transcription
+                    try:
+                        print(f"  [media] Transcribing audio with ZenMux omni...")
+                        transcript = self.api_embedder.transcribe_audio(audio_path)
+                        if transcript and not transcript.startswith("(audio"):
+                            print(f"  [media] Transcript: {len(transcript)} chars")
+                        else:
+                            print(f"  [media] Omni transcription returned placeholder")
+                            transcript = ""  # Treat placeholder as no transcript
+                    except Exception as exc:
+                        print(f"  Warning: ZenMux omni audio transcription failed: {exc}")
+                elif self.transcription_provider is not None:
+                    # Local mode: Use Parakeet for audio transcription
+                    try:
+                        print(f"  [media] Transcribing audio with Parakeet...")
+                        transcript = self.transcription_provider.transcribe(audio_path)
+                        if isinstance(transcript, dict):
+                            transcript = transcript.get("text", "")
+                        print(f"  [media] Transcript: {len(transcript)} chars")
+                    except Exception as exc:
+                        print(f"  Warning: Parakeet transcription failed: {exc}")
 
             # --- Extract key frames (video only) ---
             frame_paths: List[str] = []
@@ -1097,14 +1112,19 @@ def run_analysis(
 
     if _needs_processing:
         _transcriber = None
+        _api_embedder_for_audio = None
         if not use_api and not text_only and HAS_PARAKEET:
             _print("  [init] Parakeet ASR available for audio transcription")
             _transcriber = create_parakeet_transcriber(
                 cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
             )
+        elif use_api and HAS_API_EMBEDDING:
+            # In API mode, use the embedder's omni model for audio transcription
+            _api_embedder_for_audio = create_api_embedder()
         processor = DocumentProcessor(
             transcription_provider=_transcriber,
             use_api=use_api,
+            api_embedder=_api_embedder_for_audio,
         )
 
         if _new_or_modified and _embeddings_exist:
@@ -2313,13 +2333,18 @@ def run_interactive_session(
     # API mode: audio/video handled by omni model at embedding time
     # ----------------------------------------------------------------
     _transcriber = None
+    _api_embedder_for_audio = None
     if not use_api and not text_only and HAS_PARAKEET:
         _transcriber = create_parakeet_transcriber(
             cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
         )
+    elif use_api and HAS_API_EMBEDDING:
+        # In API mode, use the embedder's omni model for audio transcription
+        _api_embedder_for_audio = create_api_embedder()
     processor = DocumentProcessor(
         transcription_provider=_transcriber,
         use_api=use_api,
+        api_embedder=_api_embedder_for_audio,
     )
     all_chunks: List[dict] = []
     all_documents: List[dict] = []
@@ -2606,13 +2631,18 @@ def run_collection_add(
 
     # Process documents once
     _transcriber = None
+    _api_embedder_for_audio = None
     if not use_api and not text_only and HAS_PARAKEET:
         _transcriber = create_parakeet_transcriber(
             cache_dir=str(Path.home() / ".vrlmrag" / "parakeet_cache"),
         )
+    elif use_api and HAS_API_EMBEDDING:
+        # In API mode, use the embedder's omni model for audio transcription
+        _api_embedder_for_audio = create_api_embedder()
     processor = DocumentProcessor(
         transcription_provider=_transcriber,
         use_api=use_api,
+        api_embedder=_api_embedder_for_audio,
     )
     print(f"[collection] Processing: {input_path}")
     documents = processor.process_path(input_path)

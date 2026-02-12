@@ -68,6 +68,11 @@ _IMAGE_DESCRIBE_PROMPT = (
     "Be thorough and factual."
 )
 
+_AUDIO_TRANSCRIBE_PROMPT = (
+    "Transcribe this audio accurately. Include all spoken words, punctuation, and speaker "
+    "identification if multiple speakers are present. Preserve the original language."
+)
+
 _VIDEO_DESCRIBE_PROMPT = (
     "Describe these video frames in detail for a document retrieval system. "
     "Summarize the visual content, any text shown, and key information."
@@ -241,6 +246,88 @@ class APIEmbeddingProvider:
             parts.append(self._describe_video(video, max_frames))
         combined = "\n\n".join(parts) if parts else ""
         return self._embed_texts([combined])[0]
+
+    def transcribe_audio(
+        self,
+        audio: Union[str, Any],
+        instruction: Optional[str] = None,
+    ) -> str:
+        """Transcribe audio using ZenMux omni model, fallback to placeholder.
+
+        The ZenMux Ming-flash-omni-preview model supports audio transcription
+        directly via the chat.completions API with audio file inputs.
+
+        Args:
+            audio: Path to audio file (.wav, .mp3, etc.) or audio data
+            instruction: Optional custom transcription instruction
+
+        Returns:
+            Transcription text or placeholder if unavailable
+        """
+        # Convert audio to data URI if it's a file path
+        audio_url = self._to_audio_url(audio)
+        if not audio_url:
+            return "(audio transcription unavailable — file conversion failed)"
+
+        prompt = instruction or _AUDIO_TRANSCRIBE_PROMPT
+
+        # Try primary VLM (ZenMux omni) with audio support
+        if self._vlm_client and not self._vlm_disabled:
+            try:
+                resp = self._vlm_client.chat.completions.create(
+                    model=self._vlm_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "input_audio", "input_audio": {"data": audio_url, "format": "wav"}},
+                            ],
+                        }
+                    ],
+                    max_tokens=1024,  # Longer for transcripts
+                )
+                self._vlm_consecutive_failures = 0
+                transcript = resp.choices[0].message.content or "(no transcription)"
+                logger.debug(f"Audio transcribed via ZenMux omni: {len(transcript)} chars")
+                return transcript
+            except Exception as e:
+                self._vlm_consecutive_failures += 1
+                logger.warning(f"ZenMux omni audio transcription failed: {e}")
+                if self._vlm_consecutive_failures >= _VLM_MAX_CONSECUTIVE_FAILURES:
+                    self._vlm_disabled = True
+                    logger.warning(f"Primary VLM disabled after {self._vlm_consecutive_failures} failures")
+
+        # Fallback: try OpenRouter (Kimi K2 doesn't support audio, but try anyway)
+        if self._vlm_fallback_client and not self._vlm_fallback_disabled:
+            logger.debug("Audio transcription fallback not available (Kimi K2 doesn't support audio)")
+
+        return "(audio transcription unavailable — omni model failed)"
+
+    @staticmethod
+    def _to_audio_url(audio: Union[str, Any]) -> Optional[str]:
+        """Convert an audio path to a base64 data-URI for API upload."""
+        if isinstance(audio, str):
+            if audio.startswith(("http://", "https://", "data:")):
+                return audio
+            path = Path(audio)
+            if path.is_file():
+                # Read and encode audio file
+                data = path.read_bytes()
+                suffix = path.suffix.lower().lstrip(".")
+                # Map common audio formats
+                mime_map = {
+                    "wav": "wav",
+                    "mp3": "mp3",
+                    "flac": "flac",
+                    "ogg": "ogg",
+                    "m4a": "m4a",
+                    "webm": "webm",
+                }
+                mime = mime_map.get(suffix, "wav")  # Default to wav
+                b64 = base64.b64encode(data).decode()
+                return f"data:audio/{mime};base64,{b64}"
+        return None
 
     # ── Private helpers ───────────────────────────────────────────
 
