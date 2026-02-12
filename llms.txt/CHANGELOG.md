@@ -7,6 +7,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-12
+
+### Enhanced Document Processing
+- **PDF support** — PyMuPDF (`fitz`) extracts text and images from PDF documents
+  - Handles multi-page PDFs with page-by-page processing
+  - Extracts embedded images and figures
+  - Falls back gracefully if PyMuPDF not installed
+- **DOCX support** — `python-docx` extracts text and tables from Word documents
+  - Paragraph-level text extraction
+  - Table cell content as structured text
+- **CSV/Excel support** — Tabular data ingestion with natural language chunking
+  - CSV via standard library `csv` module
+  - Excel (.xlsx) via `openpyxl`
+  - Rows converted to natural language sentences for embedding
+  - Column headers preserved for context
+- **Sliding window chunking** — Configurable text segmentation
+  - `--chunk-size N` — Characters per chunk (default: 1000)
+  - `--chunk-overlap N` — Overlap between chunks (default: 100)
+  - Better than simple header-based chunking for long documents
+
+### RAG Improvements
+- **BM25 keyword search** — State-of-the-art keyword retrieval
+  - Uses `rank-bm25` library for Okapi BM25 scoring
+  - Automatic fallback to simple token-overlap if library not installed
+  - Better term frequency and document length normalization
+- **SQLite backend** — Alternative to JSON storage for vector store
+  - `--use-sqlite` CLI flag enables SQLite persistence
+  - Better performance with large collections (10K+ documents)
+  - Transaction safety and concurrent read access
+  - Automatic table creation with proper indexing
+- **Configurable RRF weights** — Tune dense vs keyword search balance
+  - `--rrf-dense-weight W` — Weight for dense embedding search (default: 4.0)
+  - `--rrf-keyword-weight W` — Weight for BM25 keyword search (default: 1.0)
+  - Allows domain-specific tuning (e.g., keyword-heavy for legal docs)
+- **Multi-query retrieval** — Generate sub-queries for broader recall
+  - `--multi-query` CLI flag activates RLM-powered sub-query generation
+  - Generates 2-3 complementary queries covering different aspects
+  - Automatically deduplicates generated queries
+  - Aggregates results from all sub-queries
+
+### Knowledge Graph Enhancements
+- **Graph visualization export** — Multiple diagram formats
+  - `--export-graph PATH` exports knowledge graph to file
+  - `--graph-format` supports: `mermaid` (default), `graphviz` (DOT), `networkx`
+  - Mermaid format for GitHub/GitLab rendering
+  - Graphviz DOT for professional diagram tools
+  - NetworkX pickle/JSON for programmatic analysis
+- **Graph statistics** — `--graph-stats` shows KG metrics
+  - Entity count and relationship count
+  - Entity type distribution
+  - Connected ratio (relationships per entity)
+- **Entity deduplication** — Merge similar entities automatically
+  - `--deduplicate-kg` applies fuzzy matching merges
+  - `--dedup-threshold T` controls sensitivity (default: 0.85, range 0-1)
+  - `--dedup-report` previews merges without applying
+  - Fuzzy string matching with normalization ("The Company Inc." ≈ "Company")
+  - Updates relationships to use canonical entity names
+- **NetworkX serialization** — `export_to_networkx()` creates structured graphs
+  - Entities as nodes with type/description attributes
+  - Relationships as edges with relation type attributes
+  - Compatible with NetworkX graph algorithms
+
+### New Files
+- `src/vl_rag_graph_rlm/rag/sqlite_store.py` — SQLite backend for MultimodalVectorStore
+- `src/vl_rag_graph_rlm/kg_visualization.py` — Graph export/visualization utilities
+- `src/vl_rag_graph_rlm/kg_deduplication.py` — Entity deduplication and coreference resolution
+
 ## [0.1.5] - 2026-02-12
 
 ### Model Upgrade Workflows

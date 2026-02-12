@@ -6,6 +6,7 @@ from vl_rag_graph_rlm.clients.anthropic import AnthropicClient, AnthropicCompati
 from vl_rag_graph_rlm.clients.base import BaseLM
 from vl_rag_graph_rlm.clients.gemini import GeminiClient
 from vl_rag_graph_rlm.clients.litellm import LiteLLMClient
+from vl_rag_graph_rlm.clients.ollama import OllamaClient
 from vl_rag_graph_rlm.clients.hierarchy import (
     HierarchyClient,
     get_hierarchy,
@@ -140,6 +141,8 @@ def get_client(provider: ProviderType | str, **kwargs) -> BaseLM:
         return NebiusClient(**kwargs)
     elif provider == "cerebras":
         return CerebrasClient(**kwargs)
+    elif provider == "ollama":
+        return OllamaClient(**kwargs)
     elif provider == "litellm":
         return LiteLLMClient(**kwargs)
     else:
@@ -174,4 +177,5 @@ __all__ = [
     "SambaNovaClient",
     "NebiusClient",
     "CerebrasClient",
+    "OllamaClient",
 ]

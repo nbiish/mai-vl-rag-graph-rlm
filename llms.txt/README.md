@@ -1,6 +1,6 @@
 # VL-RAG-Graph-RLM Documentation
 
-Version: 0.1.2 (Feb 11, 2026)
+Version: 0.2.0 (Feb 12, 2026)
 
 ## Overview
 
@@ -8,19 +8,65 @@ This folder contains comprehensive documentation for the **VL-RAG-Graph-RLM** (V
 
 The system processes documents (PPTX, PDF, TXT, MD, Video, Audio) through a full 6-pillar pipeline: Qwen3-VL vision-language embeddings → hybrid RAG with RRF fusion → cross-attention reranking → knowledge graph extraction → recursive LLM reasoning → markdown report generation. All model loading uses **sequential load-use-free** memory management (peak ~6.7 GB on a 40-min video).
 
-## What's New (v0.1.2 — Feb 11, 2026)
+## What's New (v0.2.0 — Feb 12, 2026)
 
-### Audio Transcription & Video Processing
-- **Audio support** via NVIDIA Parakeet V3 — `add_audio()` transcribes and embeds transcript text
-- **RAM-safe video** via ffmpeg frame extraction — never loads full video into memory
-- **Lazy model loading** — `MultimodalRAGPipeline.__init__` uses ~207 MB; models load on first use
-- **Sequential load-use-free** — embedder freed before reranker loads (peak 6.7 GB vs 20 GB+)
+### 📦 Collection Management (New!)
+- **Export/Import** — `--collection-export PATH` and `--collection-import PATH` for portable tar.gz archives
+- **Collection Merge** — `--collection-merge SRC` merges one collection into another
+- **Collection Tagging** — `--collection-tag TAG` and `--collection-untag TAG` for organization
+- **Collection Search** — `--collection-search QUERY` and `--collection-search-tags TAGS` to find collections
+- **Statistics Dashboard** — `--collection-stats` and `--global-stats` for detailed analytics
 
-```python
-pipeline = create_pipeline(llm_provider="sambanova")  # instant, ~207 MB
-pipeline.add_video("talk.mp4", fps=0.1, max_frames=8) # ffmpeg frames, not torchvision
-pipeline.add_audio("recording.wav", transcribe=True)  # Parakeet V3 transcription
-result = pipeline.query("What was discussed?")         # reranker loads only now
+### 🔍 RAG Improvements
+- **BM25 keyword search** — Replaced simple token-overlap with state-of-the-art BM25 algorithm via `rank-bm25`
+- **Graph-augmented retrieval** — `--graph-augmented` traverses KG edges for context expansion (`--graph-hops N`)
+- **Multi-query retrieval** — `--multi-query` generates sub-queries via RLM for broader recall
+- **Configurable RRF weights** — `--rrf-dense-weight` and `--rrf-keyword-weight` tune fusion balance
+- **SQLite backend** — `--use-sqlite` flag enables persistent vector store with better performance
+
+### 📊 Output & UX Enhancements
+- **JSON output** — `--format json` for machine-readable results (default: markdown)
+- **Log level control** — `--verbose` and `--quiet` for output verbosity
+- **Progress bars** — tqdm integration for embedding/search operations
+
+### 🎯 Smart Defaults (New!)
+- **Configuration profiles** — `--profile {fast,balanced,thorough,comprehensive}` presets
+- **Comprehensive by default** — All best features enabled automatically (multi-query, graph-augmented, deep reasoning)
+- **API hierarchy default** — Provider auto-fallback enabled by default (set keys in .env)
+- **MCP streamlined server** — 4 consolidated tools instead of 11+ for reduced context usage
+
+### 🤖 New Providers
+- **Ollama** — Local LLM inference support (`--provider ollama`)
+
+### 📄 Enhanced Document Processing
+- **PDF support** — PyMuPDF extracts text and images from PDF documents
+- **DOCX support** — python-docx extracts text and tables from Word documents
+- **CSV/Excel support** — Tabular data ingestion with natural language row chunking
+- **Sliding window chunking** — Configurable `--chunk-size` and `--chunk-overlap`
+
+### Knowledge Graph Enhancements
+- **Graph visualization** — `--export-graph PATH` exports to Mermaid, Graphviz (DOT), or NetworkX formats
+- **Graph statistics** — `--graph-stats` shows entity counts, relationship stats, type distribution
+- **Entity deduplication** — `--deduplicate-kg` merges similar entities with configurable `--dedup-threshold`
+- **NetworkX serialization** — Export structured graphs for external analysis
+
+### Model Management
+- **Model comparison** — `--model-compare OLD_MODEL` compares embeddings between model versions
+- **Compatibility checking** — `--check-model MODEL` verifies collection compatibility before migration
+- **Quality assessment** — `--quality-check` RLM-powered evaluation of embedding retrieval quality
+
+```bash
+# Process PDF with sliding window chunking
+vrlmrag document.pdf --chunk-size 500 --chunk-overlap 50
+
+# Export knowledge graph as Mermaid diagram
+vrlmrag -c research --export-graph graph.mmd --graph-format mermaid
+
+# Show graph statistics and deduplication report
+vrlmrag -c research --graph-stats --dedup-report
+
+# Run with multi-query retrieval for better recall
+vrlmrag ./docs -q "Key findings?" --multi-query
 ```
 
 ### Named Persistent Collections (v0.1.1)
@@ -112,16 +158,14 @@ Default hierarchy: `sambanova → nebius → groq → cerebras → zai → zenmu
 
 See **[TODO.md](TODO.md)** for the full roadmap. Key upcoming features:
 
-- **Collection enhancements:** import/export, tagging, collection-to-collection merging, remote sync
-- **RAG improvements:** BM25 keyword search, SQLite vector store, multi-query retrieval
-- **Knowledge graph:** NetworkX serialization, Mermaid visualization, entity deduplication
-- **CLI/UX:** `--format json`, streaming output, progress bars, `--verbose`/`--quiet`
-- **Testing:** Unit tests, integration tests, CI pipeline, benchmark suite
-- **Providers:** Ollama (local), vLLM (self-hosted), token tracking, rate limiting
+- **Collection enhancements:** Remote sync, multi-user access
+- **Testing:** Integration tests, CI pipeline, benchmark suite
+- **Providers:** vLLM (self-hosted), more local LLM options
+- **Advanced RAG:** Hybrid fusion, query expansion, cross-collection search
 
 ## Version
 
-Current release: **v0.1.2** (2026-02-11)
+Current release: **v0.2.0** (2026-02-12)
 
 See **[CHANGELOG.md](CHANGELOG.md)** for full release notes.
 

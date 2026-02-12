@@ -34,9 +34,49 @@
 
 **Vision-Language RAG Graph Recursive Language Models** — a unified multimodal document analysis framework combining **Qwen3-VL embeddings**, **hybrid RAG with RRF fusion**, **cross-attention reranking**, **knowledge graph extraction**, and **recursive LLM reasoning** across **17 LLM provider templates** with automatic fallback. Supports **text, images, video, and audio** with memory-safe sequential model loading (peak ~6.7 GB). Features **named persistent collections**, **MCP server integration**, **accuracy-first retrieval**, and **universal persistent embeddings** with SHA-256 deduplication.
 
-## What's New (Feb 12, 2026)
+## What's New (v0.2.0 — Feb 12, 2026)
 
-### 🎬 Video Processing with Safeguards
+### � Collection Management (New!)
+- **Export/Import** — `--collection-export PATH` and `--collection-import PATH` for portable tar.gz archives
+- **Collection Merge** — `--collection-merge SRC` merges one collection into another
+- **Collection Tagging** — `--collection-tag TAG` and `--collection-untag TAG` for organization
+- **Collection Search** — `--collection-search QUERY` and `--collection-search-tags TAGS` to find collections
+- **Statistics Dashboard** — `--collection-stats` and `--global-stats` for detailed analytics
+
+### 🔍 RAG Improvements
+- **BM25 keyword search** — State-of-the-art BM25 algorithm via `rank-bm25` (fallback to simple overlap)
+- **Graph-augmented retrieval** — `--graph-augmented` traverses KG edges for context expansion (`--graph-hops N`)
+- **Multi-query retrieval** — `--multi-query` generates sub-queries via RLM for broader recall
+- **Configurable RRF weights** — `--rrf-dense-weight` and `--rrf-keyword-weight` tune fusion balance
+- **SQLite backend** — `--use-sqlite` enables persistent vector store for better large-collection performance
+
+### 📊 Output & UX Enhancements
+- **JSON output** — `--format json` for machine-readable results (default: markdown)
+- **Log level control** — `--verbose` and `--quiet` for output verbosity
+- **Progress bars** — tqdm integration for embedding/search operations
+
+### 🤖 New Providers
+- **Ollama** — Local LLM inference support (`--provider ollama`, models: llama3.2, mistral, qwen2.5)
+
+### 📄 Enhanced Document Processing
+- **PDF support** — PyMuPDF extracts text and images from PDF documents
+- **DOCX support** — python-docx extracts text and tables from Word documents
+- **CSV/Excel support** — Tabular data ingestion with natural language row chunking
+- **Sliding window chunking** — Configurable `--chunk-size` and `--chunk-overlap`
+
+### 📊 Knowledge Graph Enhancements
+- **Graph visualization** — `--export-graph PATH` exports to Mermaid, Graphviz DOT, or NetworkX
+- **Graph statistics** — `--graph-stats` shows entity counts, relationships, type distribution
+- **Entity deduplication** — `--deduplicate-kg` merges similar entities with `--dedup-threshold` control
+- **NetworkX serialization** — Export structured graphs for external analysis
+
+### 🔄 Model Management
+- **Model comparison** — `--model-compare OLD_MODEL` compares embeddings between model versions
+- **Compatibility checking** — `--check-model MODEL` verifies collection compatibility
+- **Quality assessment** — `--quality-check` RLM-powered evaluation of retrieval quality
+- **Token tracking** — Automatic API token usage tracking and cost estimation
+
+### 🎬 Video Processing with Safeguards (v0.1.2)
 - **ZenMux Ming-flash-omni-preview** as primary VLM for video frame description
 - **OpenRouter Kimi K2.5** as automatic fallback when ZenMux fails
 - **Circuit breaker pattern** — VLM disabled after 3 consecutive failures
@@ -377,7 +417,7 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider NAME` | `-p` | LLM provider (default: `auto` — uses hierarchy) |
-| `PATH` | | File or folder to process (PPTX, PDF, TXT, MD) |
+| `PATH` | | File or folder to process (PPTX, PDF, DOCX, TXT, MD, CSV, XLSX, Video, Audio) |
 | `--query QUERY` | `-q` | Custom query (default: auto-generated) |
 | `--output PATH` | `-o` | Output markdown report path |
 | `--model MODEL` | `-m` | Override default model |
@@ -385,6 +425,14 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
 | `--max-iterations N` | | RLM iterations per call (default: 10) |
 | `--text-only` | | Text-only embeddings (~1.2 GB RAM, skips images) |
 | `--use-api` | | API-based embeddings (~200 MB RAM, requires internet) |
+| `--use-sqlite` | | SQLite backend for vector store (better for large collections) |
+| `--chunk-size N` | | Sliding window chunk size (default: 1000 chars) |
+| `--chunk-overlap N` | | Sliding window overlap (default: 100 chars) |
+| `--rrf-dense-weight W` | | Weight for dense search in RRF fusion (default: 4.0) |
+| `--rrf-keyword-weight W` | | Weight for keyword search in RRF fusion (default: 1.0) |
+| `--multi-query` | | Generate sub-queries for broader recall |
+| `--profile {fast,balanced,thorough,comprehensive}` | | Configuration preset (default: balanced) |
+| `--comprehensive` | | Enable all best features (equivalent to --profile comprehensive) |
 | `--interactive` | `-i` | Interactive session (load VL once, query continuously) |
 | `--store-dir DIR` | | Persistence directory for embeddings + knowledge graph |
 | `--collection NAME` | `-c` | Named collection (repeatable: `-c A -c B` to blend) |
@@ -393,6 +441,29 @@ usage: vrlmrag [-h] [--version] [--list-providers] [--show-hierarchy]
 | `--collection-info` | | Show detailed info for the specified collection |
 | `--collection-delete` | | Delete the specified collection and all its data |
 | `--collection-description TEXT` | | Description for a new collection (used with `--add`) |
+| `--graph-augmented` | | Enable graph-augmented retrieval (traverse KG edges) |
+| `--graph-hops N` | | Maximum graph traversal hops (default: 2) |
+| `--format {markdown,json}` | | Output format: markdown (default) or json |
+| `--verbose` | `-v` | Enable verbose output (detailed progress) |
+| `--quiet` | `-q` | Suppress all non-error output (silent mode) |
+| `--collection-export PATH` | | Export collection to portable tar.gz archive |
+| `--collection-import PATH` | | Import collection from tar.gz archive |
+| `--collection-merge SRC` | | Merge SRC collection into target (use with `-c`) |
+| `--collection-tag TAG` | | Add tag to collection (repeatable) |
+| `--collection-untag TAG` | | Remove tag from collection (repeatable) |
+| `--collection-search QUERY` | | Search collections by name/description |
+| `--collection-search-tags TAGS` | | Filter collections by tags (comma-separated) |
+| `--collection-stats` | | Show detailed statistics for collection(s) |
+| `--global-stats` | | Show global statistics across all collections |
+| `--model-compare OLD_MODEL` | | Compare embeddings between OLD_MODEL and current model |
+| `--check-model MODEL` | | Check collection compatibility with target model (requires `-c`) |
+| `--quality-check` | | RLM-powered embedding quality assessment (requires `-c`) |
+| `--export-graph PATH` | | Export knowledge graph to file (use with `--graph-format`) |
+| `--graph-format FMT` | | Graph format: mermaid, graphviz, networkx (default: mermaid) |
+| `--graph-stats` | | Show knowledge graph statistics |
+| `--deduplicate-kg` | | Deduplicate entities in knowledge graph |
+| `--dedup-threshold T` | | Similarity threshold for deduplication (default: 0.85) |
+| `--dedup-report` | | Show deduplication report without applying changes |
 | `--list-providers` | | Show all providers + API key status |
 | `--show-hierarchy` | | Show provider fallback order + availability |
 | `--version` | `-V` | Print version |
@@ -425,6 +496,34 @@ Customize the order in `.env`:
 ```bash
 PROVIDER_HIERARCHY=groq,cerebras,openrouter,zai,zenmux,nebius,sambanova
 ```
+
+### Configuration Profiles
+
+Use preset configurations optimized for different use cases:
+
+| Profile | Speed | Quality | Best For |
+|---------|-------|---------|----------|
+| `fast` | ⚡ Fast | Good | Quick lookups, low resources (~1.2GB RAM) |
+| `balanced` | ⚖️ Balanced | Better | General use |
+| `thorough` | 🐢 Slower | Excellent | Research, deep analysis |
+| `comprehensive` | 🐢 Slowest | Maximum | **Default** — all features enabled, critical analysis |
+
+```bash
+# Comprehensive mode is now default (no flags needed)
+vrlmrag ./research-papers -q "What are the key findings?"
+
+# Use --profile or --comprehensive explicitly if desired
+vrlmrag ./docs --comprehensive -q "Deep analysis"
+
+# Fast mode for quick results
+vrlmrag ./notes --profile fast -q "Quick summary"
+```
+
+The `--comprehensive` flag automatically enables:
+- Multi-query retrieval for broader recall
+- Graph-augmented context expansion (3 hops)
+- Deeper RLM reasoning (depth=5, iterations=15)
+- Verbose progress output
 
 ## Environment Variables
 

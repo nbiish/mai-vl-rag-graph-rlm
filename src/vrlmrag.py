@@ -936,6 +936,12 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "description": "Cerebras — Ultra-fast wafer-scale (GLM-4.7, GPT-OSS-120B, Qwen3-235B)",
         "context_budget": 32000,
     },
+    "ollama": {
+        "env_key": "OLLAMA_MODEL",  # Not really an API key, but indicates intent to use Ollama
+        "url": "https://ollama.com",
+        "description": "Ollama — Local LLM inference (llama3.2, mistral, qwen2.5, etc.)",
+        "context_budget": 32000,
+    },
 }
 
 
@@ -989,6 +995,10 @@ def run_analysis(
     _quiet: bool = False,
     multi_query: bool = False,
     rrf_weights: Optional[List[float]] = None,
+    use_graph_augmented: bool = False,
+    graph_hops: int = 2,
+    output_format: str = "markdown",
+    verbose: bool = False,
 ) -> dict:
     """Run full VL-RAG-Graph-RLM analysis with any supported provider.
 
@@ -1478,6 +1488,8 @@ def run_analysis(
             max_iterations=max_iterations,
             verbose=not _quiet,
             rrf_weights=rrf_weights or [4.0, 1.0],
+            use_graph_augmented=use_graph_augmented,
+            graph_hops=graph_hops,
         )
         query_results.append(qr)
 
@@ -1500,15 +1512,20 @@ def run_analysis(
     }
 
     if not _quiet:
-        _print("\n" + "=" * 70)
-        _print("Generating markdown report...")
-        _print("=" * 70)
+        if output_format == "json":
+            # JSON output
+            _print("\n" + json.dumps(results, indent=2, default=str))
+        else:
+            # Markdown report
+            _print("\n" + "=" * 70)
+            _print("Generating markdown report...")
+            _print("=" * 70)
 
-        generator = MarkdownReportGenerator()
-        report = generator.generate(results, output)
+            generator = MarkdownReportGenerator()
+            report = generator.generate(results, output)
 
-        if not output:
-            _print("\n" + report)
+            if not output:
+                _print("\n" + report)
 
     return results
 
@@ -1840,6 +1857,8 @@ def _run_vl_rag_query(
     max_iterations: int,
     verbose: bool = True,
     rrf_weights: Optional[List[float]] = None,
+    use_graph_augmented: bool = False,
+    graph_hops: int = 2,
 ) -> Dict[str, Any]:
     """Run a single query through the full VL-RAG-Graph-RLM pipeline.
 
@@ -1953,6 +1972,33 @@ def _run_vl_rag_query(
             f"[Knowledge Graph]\n{knowledge_graph[:kg_budget]}\n\n---\n\n"
             f"{context}"
         )
+
+    # ── Stage 4b: Graph-augmented retrieval (optional) ─────────────
+    if use_graph_augmented and knowledge_graph and not knowledge_graph.startswith("Could not"):
+        try:
+            from vl_rag_graph_rlm.graph_retrieval import augment_retrieval_with_graph
+            
+            # Build chunk list from context for entity extraction
+            context_chunks = [{"content": context}]
+            
+            graph_context = augment_retrieval_with_graph(
+                query=query,
+                retrieved_chunks=context_chunks,
+                kg_text=knowledge_graph,
+                max_hops=graph_hops,
+                max_expanded=15,
+            )
+            
+            if graph_context:
+                if verbose:
+                    print(f"    Graph-augmented: added {graph_context.count('→')} connections")
+                context = (
+                    f"[Graph-Augmented Context]\n{graph_context}\n\n---\n\n"
+                    f"{context}"
+                )
+        except Exception as e:
+            if verbose:
+                print(f"    Graph augmentation skipped: {e}")
 
     # ── Stage 5: RLM recursive completion ──────────────────────────
     try:
@@ -3063,9 +3109,7 @@ def main():
     )
 
     parser.add_argument(
-        "--provider", "-p",
-        metavar="NAME",
-        default="auto",
+        "--provider", default="auto",
         help=f"LLM provider to use (default: auto — uses hierarchy). Options: auto, {provider_names}",
     )
 
@@ -3082,6 +3126,35 @@ def main():
     parser.add_argument(
         "--output", "-o",
         help="Output markdown report path (default: print to stdout)",
+    )
+
+    parser.add_argument(
+        "--format",
+        choices=["markdown", "json"], default="markdown",
+        help="Output format: markdown (default) or json (machine-readable)",
+    )
+
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Enable verbose output (detailed progress information)",
+    )
+
+    parser.add_argument(
+        "--quiet", "-q", action="store_true",
+        help="Suppress all non-error output (silent mode)",
+    )
+
+    parser.add_argument(
+        "--profile",
+        choices=["fast", "balanced", "thorough", "comprehensive"],
+        default="comprehensive",
+        help="Configuration preset: fast, balanced, thorough, or comprehensive (default: comprehensive)",
+    )
+
+    parser.add_argument(
+        "--comprehensive", action="store_true",
+        help="Enable all best features (equivalent to --profile comprehensive). "
+             "Enables multi-query, graph-augmented retrieval, verbose output, and deep reasoning.",
     )
 
     parser.add_argument(
@@ -3216,6 +3289,16 @@ def main():
         help="Show deduplication report without applying changes",
     )
 
+    parser.add_argument(
+        "--graph-augmented", action="store_true",
+        help="Enable graph-augmented retrieval (traverse KG edges for context expansion)",
+    )
+
+    parser.add_argument(
+        "--graph-hops", type=int, default=2,
+        help="Maximum graph traversal hops for graph-augmented retrieval (default: 2)",
+    )
+
     # ── Collection arguments ──────────────────────────────────────────
     parser.add_argument(
         "--collection", "-c",
@@ -3245,9 +3328,69 @@ def main():
     )
 
     parser.add_argument(
+        "--collection-export",
+        metavar="PATH",
+        help="Export collection to a portable tar.gz archive at PATH (requires -c)",
+    )
+
+    parser.add_argument(
+        "--collection-import",
+        metavar="PATH",
+        help="Import collection from a tar.gz archive at PATH",
+    )
+
+    parser.add_argument(
+        "--import-rename",
+        metavar="NAME",
+        help="Rename imported collection to NAME (use with --collection-import)",
+    )
+
+    parser.add_argument(
+        "--collection-merge",
+        metavar="SRC",
+        help="Merge SRC collection into target collection (requires -c for target)",
+    )
+
+    parser.add_argument(
         "--collection-description",
         metavar="TEXT", default="",
         help="Description for a new collection (used with --add)",
+    )
+
+    parser.add_argument(
+        "--collection-tag",
+        metavar="TAG",
+        action="append", default=[],
+        help="Add tag(s) to collection (use with -c) — repeatable",
+    )
+
+    parser.add_argument(
+        "--collection-untag",
+        metavar="TAG",
+        action="append", default=[],
+        help="Remove tag(s) from collection (use with -c) — repeatable",
+    )
+
+    parser.add_argument(
+        "--collection-search",
+        metavar="QUERY",
+        help="Search collections by name/description (omit -c for all collections)",
+    )
+
+    parser.add_argument(
+        "--collection-search-tags",
+        metavar="TAGS",
+        help="Filter collections by tags (comma-separated, use with --collection-search)",
+    )
+
+    parser.add_argument(
+        "--collection-stats", action="store_true",
+        help="Show detailed statistics for specified collection(s)",
+    )
+
+    parser.add_argument(
+        "--global-stats", action="store_true",
+        help="Show global statistics across all collections",
     )
 
     # Backward-compatible aliases (hidden from main help)
@@ -3292,6 +3435,18 @@ def main():
     elif args.nebius and not provider:
         provider = "nebius"
         input_path = args.nebius
+
+    # ── Apply profile / comprehensive mode ──────────────────────────────
+    if args.comprehensive:
+        args.profile = "comprehensive"
+    
+    if args.profile:
+        from vl_rag_graph_rlm.profiles import apply_profile
+        apply_profile(args, args.profile)
+        if not args.quiet:
+            print(f"[profile] Using '{args.profile}' configuration preset")
+            if args.profile == "comprehensive":
+                print("[profile] Features enabled: multi-query, graph-augmented, verbose")
 
     # ── Compute use_api from --local and --offline flags ────────────────
     # Default: API mode (use_api=True). --local or --offline opts into local models.
@@ -3555,12 +3710,147 @@ def main():
                 print(f"Collection not found: {cname}")
         return
 
+    # ── Handle collection export ───────────────────────────────────────
+    if args.collection_export:
+        if not args.collection:
+            print("Error: --collection-export requires -c <name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.collections import export_collection
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            try:
+                archive_path = export_collection(cname, args.collection_export)
+                print(f"Exported collection '{cname}' to: {archive_path}")
+            except Exception as e:
+                print(f"Error exporting collection '{cname}': {e}")
+        return
+
+    # ── Handle collection import ───────────────────────────────────────
+    if args.collection_import:
+        from vl_rag_graph_rlm.collections import import_collection
+        try:
+            meta = import_collection(args.collection_import, args.import_rename)
+            print(f"Imported collection as: {meta['name']}")
+            print(f"  Display name: {meta.get('display_name', meta['name'])}")
+            print(f"  Documents: {meta.get('document_count', 0)}")
+            print(f"  Chunks: {meta.get('chunk_count', 0)}")
+        except Exception as e:
+            print(f"Error importing collection: {e}")
+        return
+
+    # ── Handle collection merge ────────────────────────────────────────
+    if args.collection_merge:
+        if not args.collection:
+            print("Error: --collection-merge requires -c <target_name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.collections import merge_collections
+        target_name = args.collection[0]
+        if not collection_exists(target_name):
+            print(f"Error: Target collection '{target_name}' does not exist")
+            sys.exit(1)
+        if not collection_exists(args.collection_merge):
+            print(f"Error: Source collection '{args.collection_merge}' does not exist")
+            sys.exit(1)
+        try:
+            meta = merge_collections(args.collection_merge, target_name)
+            print(f"Merged '{args.collection_merge}' into '{target_name}'")
+            print(f"  Total documents: {meta.get('document_count', 0)}")
+            print(f"  Total chunks: {meta.get('chunk_count', 0)}")
+        except Exception as e:
+            print(f"Error merging collections: {e}")
+        return
+
     if args.collection_info:
         if not args.collection:
             print("Error: --collection-info requires -c <name>")
             sys.exit(1)
         for cname in args.collection:
             show_collection_info(cname)
+        return
+
+    # ── Handle collection tagging ────────────────────────────────────
+    if args.collection_tag:
+        if not args.collection:
+            print("Error: --collection-tag requires -c <name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.collections import add_tags
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            add_tags(cname, args.collection_tag)
+            print(f"Added tags to '{cname}': {', '.join(args.collection_tag)}")
+        return
+
+    if args.collection_untag:
+        if not args.collection:
+            print("Error: --collection-untag requires -c <name>")
+            sys.exit(1)
+        from vl_rag_graph_rlm.collections import remove_tags
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            remove_tags(cname, args.collection_untag)
+            print(f"Removed tags from '{cname}': {', '.join(args.collection_untag)}")
+        return
+
+    # ── Handle collection search ──────────────────────────────────────
+    if args.collection_search or args.collection_search_tags:
+        from vl_rag_graph_rlm.collections import search_collections
+        search_tags = args.collection_search_tags.split(",") if args.collection_search_tags else None
+        results = search_collections(
+            query=args.collection_search,
+            tags=search_tags,
+        )
+        if results:
+            print(f"\nFound {len(results)} collection(s):")
+            for c in results:
+                tags = c.get("tags", [])
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                print(f"  - {c.get('display_name', c['name'])}{tag_str}")
+                print(f"    Documents: {c.get('document_count', 0)} | Chunks: {c.get('chunk_count', 0)}")
+        else:
+            print("No collections found matching criteria.")
+        return
+
+    # ── Handle collection statistics ──────────────────────────────────
+    if args.collection_stats:
+        from vl_rag_graph_rlm.collections import get_collection_stats
+        if not args.collection:
+            print("Error: --collection-stats requires -c <name>")
+            sys.exit(1)
+        for cname in args.collection:
+            if not collection_exists(cname):
+                print(f"Error: Collection '{cname}' does not exist")
+                continue
+            stats = get_collection_stats(cname)
+            print(f"\n[collection:{cname}] Statistics:")
+            print(f"  Documents: {stats['document_count']}")
+            print(f"  Chunks: {stats['chunk_count']}")
+            print(f"  Sources: {stats['sources_count']}")
+            if stats['tags']:
+                print(f"  Tags: {', '.join(stats['tags'])}")
+            print(f"  Embedding model: {stats['embedding_model']}")
+            print(f"  Knowledge graph: {stats['knowledge_graph_size']:,} chars")
+            if stats['age_days'] is not None:
+                print(f"  Age: {stats['age_days']} days")
+        return
+
+    if args.global_stats:
+        from vl_rag_graph_rlm.collections import get_global_stats
+        stats = get_global_stats()
+        print("\nGlobal Collection Statistics:")
+        print(f"  Total collections: {stats['total_collections']}")
+        print(f"  Total documents: {stats['total_documents']}")
+        print(f"  Total chunks: {stats['total_chunks']}")
+        print(f"  Average docs/collection: {stats['average_documents']:.1f}")
+        if stats['tag_distribution']:
+            print("  Tag distribution:")
+            for tag, count in list(stats['tag_distribution'].items())[:10]:
+                print(f"    - {tag}: {count}")
         return
 
     if args.collection and args.add:
@@ -3714,6 +4004,11 @@ def main():
         text_only=args.text_only,
         multi_query=args.multi_query,
         rrf_weights=[args.rrf_dense_weight, args.rrf_keyword_weight],
+        use_graph_augmented=args.graph_augmented,
+        graph_hops=args.graph_hops,
+        output_format=args.format,
+        _quiet=args.quiet,
+        verbose=args.verbose,
     )
 
 

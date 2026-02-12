@@ -1,0 +1,432 @@
+"""Streamlined MCP server for VL-RAG-Graph-RLM.
+
+Consolidated tools for reduced context usage while maintaining full functionality:
+- 4 core tools instead of 11+ separate tools
+- Smart defaults with --comprehensive mode support
+- Unified collection operations
+"""
+
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any, Optional, List
+
+from mcp.server.fastmcp import FastMCP, Context
+
+# Bootstrap: resolve codebase root and load .env
+def _find_project_root() -> Path:
+    env_root = os.getenv("VRLMRAG_ROOT")
+    if env_root:
+        p = Path(env_root).resolve()
+        if (p / ".env").exists() or (p / "pyproject.toml").exists():
+            return p
+    file_root = Path(__file__).resolve().parent.parent.parent.parent
+    if (file_root / "pyproject.toml").exists():
+        return file_root
+    cwd = Path.cwd()
+    if (cwd / ".env").exists() or (cwd / "pyproject.toml").exists():
+        return cwd
+    return file_root
+
+_PROJECT_ROOT = _find_project_root()
+_SRC_DIR = _PROJECT_ROOT / "src"
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from dotenv import load_dotenv
+if _ENV_FILE.exists():
+    load_dotenv(dotenv_path=_ENV_FILE, override=False)
+else:
+    load_dotenv()
+
+# Imports
+from vl_rag_graph_rlm import VLRAGGraphRLM
+from vl_rag_graph_rlm.clients.hierarchy import get_available_providers, resolve_auto_provider
+from vl_rag_graph_rlm.collections import (
+    collection_exists, create_collection, load_collection_meta,
+    list_collections as _list_collections, _collection_dir,
+)
+from vl_rag_graph_rlm.mcp_server.settings import MCPSettings, load_settings
+from vl_rag_graph_rlm.local_model_lock import lock_status
+
+logger = logging.getLogger("vl_rag_graph_rlm.mcp_server")
+_SETTINGS = load_settings()
+
+logging.basicConfig(
+    level=getattr(logging, _SETTINGS.log_level.upper(), logging.INFO),
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+
+# Provider context budgets
+_PROVIDER_BUDGETS: dict[str, int] = {
+    "sambanova": 32000, "nebius": 100000, "openrouter": 32000,
+    "openai": 32000, "anthropic": 32000, "gemini": 64000,
+    "groq": 32000, "deepseek": 32000, "mistral": 32000,
+    "fireworks": 32000, "together": 32000, "zenmux": 32000,
+    "zai": 32000, "azure_openai": 32000, "cerebras": 32000,
+    "ollama": 32000,
+}
+
+# Initialize MCP server
+mcp = FastMCP(
+    "VL-RAG-Graph-RLM",
+    instructions=(
+        "Multimodal document analysis with Vision-Language embeddings, "
+        "hybrid RAG search, knowledge-graph extraction, and recursive "
+        "LLM reasoning. Use --comprehensive flag for maximum quality."
+    ),
+)
+
+
+def _effective_provider_model(
+    settings: MCPSettings,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """Resolve effective provider and model."""
+    base_provider, base_model = settings.resolve_provider_model()
+    provider = provider_override or base_provider
+    model = model_override or base_model
+    if provider == "auto":
+        provider = resolve_auto_provider()
+    return provider, model
+
+
+def _get_settings(ctx: Context) -> MCPSettings:
+    try:
+        return ctx.request_context.lifespan_context.settings
+    except (AttributeError, TypeError):
+        return load_settings()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Core Tools (4 consolidated tools instead of 11+)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+async def analyze(
+    ctx: Context,
+    input_path: str,
+    query: Optional[str] = None,
+    mode: str = "comprehensive",  
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> str:
+    """Analyze documents with the full VL-RAG-Graph-RLM pipeline.
+    
+    Unified tool for document analysis with 4 quality modes:
+    - fast: Quick results (~1.2GB RAM, minimal depth)
+    - balanced: Good quality/speed tradeoff
+    - thorough: Deep analysis with multi-query + graph augmentation
+    - comprehensive: All best features enabled (default — maximum quality)
+    
+    The comprehensive mode automatically enables:
+    - Multi-query retrieval for broader recall
+    - Graph-augmented context expansion
+    - Deeper RLM recursion (depth=5)
+    - Higher iteration limits
+    - API provider hierarchy (auto mode)
+    
+    Args:
+        input_path: Path to file or folder to analyze
+        query: Question to answer (auto-generated if not provided)
+        mode: Quality preset - fast, balanced, thorough, or comprehensive
+        provider: LLM provider override (default: auto/hierarchy)
+        model: Model name override
+        output_path: Optional path to save markdown report
+        
+    Returns:
+        Analysis result with source attribution
+    """
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+    
+    # Map modes to profile settings
+    profile_settings = {
+        "fast": {"max_depth": 2, "max_iterations": 5, "multi_query": False, 
+                "graph_augmented": False, "text_only": True},
+        "balanced": {"max_depth": 3, "max_iterations": 10, "multi_query": False,
+                    "graph_augmented": False, "text_only": False},
+        "thorough": {"max_depth": 4, "max_iterations": 12, "multi_query": True,
+                     "graph_augmented": True, "graph_hops": 3, "text_only": False},
+        "comprehensive": {"max_depth": 5, "max_iterations": 15, "multi_query": True,
+                         "graph_augmented": True, "graph_hops": 3, "verbose": True,
+                         "text_only": False},
+    }
+    
+    if mode not in profile_settings:
+        return f"Error: Unknown mode '{mode}'. Use: fast, balanced, thorough, comprehensive"
+    
+    profile = profile_settings[mode]
+    
+    from vrlmrag import run_analysis
+    
+    try:
+        results = run_analysis(
+            provider=eff_provider,
+            input_path=input_path,
+            query=query,
+            output=output_path,
+            model=eff_model,
+            max_depth=profile["max_depth"],
+            max_iterations=profile["max_iterations"],
+            use_api=not profile.get("text_only", False),
+            text_only=profile.get("text_only", False),
+            multi_query=profile.get("multi_query", False),
+            use_graph_augmented=profile.get("graph_augmented", False),
+            graph_hops=profile.get("graph_hops", 2),
+            output_format="markdown",
+            verbose=profile.get("verbose", False),
+            _quiet=False,
+        )
+        
+        # Format concise but informative response
+        lines = [
+            f"# Analysis Complete [{mode} mode]",
+            f"",
+            f"**Provider:** {results.get('provider', 'N/A')} | "
+            f"**Model:** {results.get('model', 'N/A')} | "
+            f"**Time:** {results.get('execution_time', 0):.1f}s",
+            f"**Documents:** {results.get('document_count', 0)} | "
+            f"**Chunks:** {results.get('total_chunks', 0)}",
+            f"",
+        ]
+        
+        for qr in results.get("queries", []):
+            lines.extend([f"## Q: {qr['query']}", "", qr.get("response", "No response"), ""])
+        
+        if output_path:
+            lines.append(f"*Report saved to: {output_path}*")
+            
+        return "\n".join(lines)
+        
+    except Exception as e:
+        return f"Analysis failed: {e}"
+
+
+@mcp.tool()
+async def query_collection(
+    ctx: Context,
+    collection: str,
+    query: str,
+    mode: str = "balanced",
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Query a named knowledge collection.
+    
+    Unified collection tool combining query, info, and management.
+    Collections persist embeddings and knowledge graphs for reuse.
+    
+    Args:
+        collection: Collection name (creates if doesn't exist)
+        query: Question to answer about the collection
+        mode: Quality preset - fast, balanced, thorough, comprehensive
+        provider: LLM provider override
+        model: Model name override
+        
+    Returns:
+        Answer with source attribution
+    """
+    settings = _get_settings(ctx)
+    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+    
+    # Create collection if it doesn't exist
+    if not collection_exists(collection):
+        create_collection(collection, description=f"Auto-created for query")
+        return f"Collection '{collection}' created. Add documents with: collection_add"
+    
+    # Profile settings
+    profile_settings = {
+        "fast": {"max_depth": 2, "max_iterations": 5, "multi_query": False, "graph_augmented": False},
+        "balanced": {"max_depth": 3, "max_iterations": 10, "multi_query": False, "graph_augmented": False},
+        "thorough": {"max_depth": 4, "max_iterations": 12, "multi_query": True, "graph_augmented": True},
+        "comprehensive": {"max_depth": 5, "max_iterations": 15, "multi_query": True, "graph_augmented": True},
+    }
+    
+    if mode not in profile_settings:
+        return f"Error: Unknown mode '{mode}'"
+    
+    profile = profile_settings[mode]
+    
+    from vrlmrag import run_collection_query
+    import io
+    from contextlib import redirect_stdout
+    
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_collection_query(
+            collection_names=[collection],
+            query=query,
+            provider=eff_provider,
+            model=eff_model,
+            max_depth=profile["max_depth"],
+            max_iterations=profile["max_iterations"],
+            use_api=settings.use_api,
+        )
+    
+    return buf.getvalue()
+
+
+@mcp.tool()
+async def collection_manage(
+    ctx: Context,
+    action: str,  # add, list, info, delete, export, import, merge, tag, search
+    collection: Optional[str] = None,
+    path: Optional[str] = None,
+    query: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    target_collection: Optional[str] = None,
+) -> str:
+    """Manage collections with unified operations.
+    
+    Single tool for all collection management:
+    - add: Add documents at path to collection
+    - list: Show all collections
+    - info: Show collection details
+    - delete: Remove collection
+    - export: Export to tar.gz
+    - import: Import from tar.gz
+    - merge: Merge source into target
+    - tag: Add tags to collection
+    - search: Find collections by query/tags
+    
+    Args:
+        action: Operation to perform
+        collection: Collection name (for add/info/delete/export/tag)
+        path: File/folder path (for add) or archive path (for import/export)
+        query: Search query (for search action)
+        tags: Tags to add (for tag action) or filter (for search)
+        target_collection: Target for merge operation
+        
+    Returns:
+        Operation result
+    """
+    settings = _get_settings(ctx)
+    
+    if action == "list":
+        collections = _list_collections()
+        if not collections:
+            return "No collections found."
+        lines = [f"{'Name':<25} {'Docs':>6} {'Chunks':>8} {'Updated':>20}", "-" * 65]
+        for meta in collections:
+            name = meta.get('display_name', meta['name'])
+            docs = meta.get('document_count', 0)
+            chunks = meta.get('chunk_count', 0)
+            updated = meta.get('updated', '?')[:19]
+            lines.append(f"{name:<25} {docs:>6} {chunks:>8}  {updated}")
+        return "\n".join(lines)
+    
+    if action == "info" and collection:
+        if not collection_exists(collection):
+            return f"Collection '{collection}' not found."
+        meta = load_collection_meta(collection)
+        return json.dumps(meta, indent=2, default=str)
+    
+    if action == "add" and collection and path:
+        from vrlmrag import run_collection_add
+        eff_provider, eff_model = _effective_provider_model(settings)
+        run_collection_add(
+            collection_names=[collection],
+            input_path=path,
+            provider=eff_provider,
+            model=eff_model,
+            max_depth=settings.max_depth,
+            max_iterations=settings.max_iterations,
+        )
+        meta = load_collection_meta(collection)
+        return f"Added to '{collection}': {meta.get('document_count', 0)} docs, {meta.get('chunk_count', 0)} chunks"
+    
+    if action == "delete" and collection:
+        from vl_rag_graph_rlm.collections import delete_collection
+        if delete_collection(collection):
+            return f"Deleted collection: {collection}"
+        return f"Collection not found: {collection}"
+    
+    if action == "export" and collection and path:
+        from vl_rag_graph_rlm.collections import export_collection
+        try:
+            archive_path = export_collection(collection, path)
+            return f"Exported to: {archive_path}"
+        except Exception as e:
+            return f"Export failed: {e}"
+    
+    if action == "import" and path:
+        from vl_rag_graph_rlm.collections import import_collection
+        try:
+            meta = import_collection(path)
+            return f"Imported as '{meta['name']}'"
+        except Exception as e:
+            return f"Import failed: {e}"
+    
+    if action == "merge" and collection and target_collection:
+        from vl_rag_graph_rlm.collections import merge_collections
+        try:
+            meta = merge_collections(collection, target_collection)
+            return f"Merged '{collection}' into '{target_collection}'"
+        except Exception as e:
+            return f"Merge failed: {e}"
+    
+    if action == "tag" and collection and tags:
+        from vl_rag_graph_rlm.collections import add_tags
+        add_tags(collection, tags)
+        return f"Added tags to '{collection}': {', '.join(tags)}"
+    
+    if action == "search":
+        from vl_rag_graph_rlm.collections import search_collections
+        results = search_collections(query=query, tags=tags)
+        if not results:
+            return "No collections found."
+        lines = [f"Found {len(results)} collection(s):", ""]
+        for c in results:
+            name = c.get('display_name', c['name'])
+            lines.append(f"- {name}: {c.get('document_count', 0)} docs")
+        return "\n".join(lines)
+    
+    return f"Unknown action: {action}. Use: add, list, info, delete, export, import, merge, tag, search"
+
+
+@mcp.tool()
+async def system_status(ctx: Context) -> str:
+    """Check system status including providers and local model lock.
+    
+    Returns:
+        Provider availability and local model lock status
+    """
+    lines = ["# VL-RAG-Graph-RLM System Status", ""]
+    
+    # Provider hierarchy
+    available = get_available_providers()
+    lines.append(f"**Available providers:** {', '.join(available) if available else 'None'}")
+    lines.append("")
+    
+    # Lock status
+    status = lock_status()
+    if status["locked"]:
+        lines.extend([
+            "**Local Model Lock: HELD**",
+            f"- Model: {status['model_id']}",
+            f"- PID: {status['holder_pid']}",
+            f"- Since: {status['acquired_at']}",
+        ])
+    else:
+        lines.append("**Local Model Lock: FREE**")
+    
+    lines.append("")
+    lines.append("Use `mode='comprehensive'` for maximum analysis quality.")
+    
+    return "\n".join(lines)
+
+
+# Entry point
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

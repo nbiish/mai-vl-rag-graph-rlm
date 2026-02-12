@@ -24,6 +24,7 @@ Typical CLI usage::
 
 import json
 import shutil
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -260,3 +261,361 @@ def merge_kg(existing: str, new_fragment: str) -> str:
     if not new_fragment:
         return existing
     return f"{existing}\n\n---\n\n{new_fragment}"
+
+
+# ── Export / Import ────────────────────────────────────────────────────
+
+
+def export_collection(name: str, output_path: str) -> Path:
+    """Export a collection as a portable tar.gz archive.
+    
+    Args:
+        name: Collection name to export
+        output_path: Path for the output archive (should end in .tar.gz)
+        
+    Returns:
+        Path to the created archive
+    """
+    slug = _sanitize_name(name)
+    cdir = _collection_dir(slug)
+    
+    if not cdir.exists():
+        raise FileNotFoundError(f"Collection '{name}' does not exist")
+    
+    # Ensure output path has correct extension
+    out_path = Path(output_path)
+    if not out_path.name.endswith('.tar.gz'):
+        out_path = out_path.with_suffix('.tar.gz')
+    
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create archive
+    with tarfile.open(out_path, "w:gz") as tar:
+        tar.add(cdir, arcname=slug)
+    
+    return out_path
+
+
+def import_collection(archive_path: str, new_name: Optional[str] = None) -> Dict[str, Any]:
+    """Import a collection from a tar.gz archive.
+    
+    Args:
+        archive_path: Path to the .tar.gz archive
+        new_name: Optional new name for the imported collection
+                  (defaults to archive's original name)
+                  
+    Returns:
+        Metadata for the imported collection
+    """
+    archive = Path(archive_path)
+    if not archive.exists():
+        raise FileNotFoundError(f"Archive not found: {archive_path}")
+    
+    # Extract to temporary location first to inspect
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with tarfile.open(archive, "r:gz") as tar:
+            tar.extractall(tmpdir)
+        
+        # Find the collection directory in the archive
+        tmp_path = Path(tmpdir)
+        subdirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+        
+        if not subdirs:
+            raise ValueError("Invalid archive: no collection directory found")
+        
+        source_dir = subdirs[0]
+        
+        # Determine target name
+        if new_name:
+            target_slug = _sanitize_name(new_name)
+        else:
+            target_slug = source_dir.name
+        
+        # Check if collection already exists
+        target_dir = _collection_dir(target_slug)
+        if target_dir.exists():
+            raise FileExistsError(
+                f"Collection '{target_slug}' already exists. "
+                f"Delete it first or specify a new name."
+            )
+        
+        # Copy to collections root
+        shutil.copytree(source_dir, target_dir)
+        
+        # Update metadata
+        meta = load_collection_meta(target_slug)
+        meta["imported_from"] = str(archive.resolve())
+        meta["imported_at"] = datetime.now(timezone.utc).isoformat()
+        if new_name:
+            meta["display_name"] = new_name.strip()
+        save_collection_meta(target_slug, meta)
+        
+        return meta
+
+
+def merge_collections(source_name: str, target_name: str) -> Dict[str, Any]:
+    """Merge one collection into another.
+    
+    Combines embeddings, knowledge graphs, and updates metadata.
+    The source collection remains unchanged.
+    
+    Args:
+        source_name: Collection to merge from
+        target_name: Collection to merge into
+        
+    Returns:
+        Updated metadata for the target collection
+    """
+    # Load both collections
+    source_meta = load_collection_meta(source_name)
+    target_meta = load_collection_meta(target_name)
+    
+    # Merge embeddings
+    source_emb_path = _embeddings_path(source_name)
+    target_emb_path = _embeddings_path(target_name)
+    
+    if Path(source_emb_path).exists():
+        # Load source embeddings
+        with open(source_emb_path, 'r') as f:
+            source_emb = json.load(f)
+        
+        # Load target embeddings (or create empty)
+        if Path(target_emb_path).exists():
+            with open(target_emb_path, 'r') as f:
+                target_emb = json.load(f)
+        else:
+            target_emb = {"documents": {}, "embeddings": [], "next_id": 0}
+        
+        # Merge documents (source takes precedence on ID collision)
+        offset = target_emb.get("next_id", 0)
+        for doc_id, doc in source_emb.get("documents", {}).items():
+            new_id = str(int(doc_id) + offset)
+            target_emb["documents"][new_id] = doc
+            # Update embedding references
+            for emb in source_emb.get("embeddings", []):
+                if emb.get("doc_id") == doc_id:
+                    new_emb = emb.copy()
+                    new_emb["doc_id"] = new_id
+                    target_emb["embeddings"].append(new_emb)
+        
+        target_emb["next_id"] = offset + source_emb.get("next_id", 0)
+        
+        # Save merged embeddings
+        Path(target_emb_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(target_emb_path, 'w') as f:
+            json.dump(target_emb, f, indent=2)
+    
+    # Merge knowledge graphs
+    source_kg = load_kg(source_name)
+    if source_kg:
+        target_kg = load_kg(target_name)
+        merged_kg = merge_kg(target_kg, source_kg)
+        save_kg(target_name, merged_kg)
+    
+    # Update metadata
+    target_meta["sources"].extend([
+        {**s, "merged_from": source_name} 
+        for s in source_meta.get("sources", [])
+    ])
+    target_meta["document_count"] = target_meta.get("document_count", 0) + source_meta.get("document_count", 0)
+    target_meta["chunk_count"] = target_meta.get("chunk_count", 0) + source_meta.get("chunk_count", 0)
+    target_meta["merged_sources"] = target_meta.get("merged_sources", []) + [source_name]
+    
+    save_collection_meta(target_name, target_meta)
+    return target_meta
+
+
+# ── Tagging & Search ─────────────────────────────────────────────────
+
+
+def add_tags(name: str, tags: List[str]) -> None:
+    """Add tags to a collection.
+    
+    Args:
+        name: Collection name
+        tags: List of tag strings to add
+    """
+    meta = load_collection_meta(name)
+    if "tags" not in meta:
+        meta["tags"] = []
+    
+    # Normalize tags: lowercase, no spaces, unique
+    normalized = [t.lower().replace(" ", "-").strip() for t in tags if t.strip()]
+    existing = set(meta["tags"])
+    new_tags = [t for t in normalized if t not in existing]
+    
+    meta["tags"].extend(new_tags)
+    save_collection_meta(name, meta)
+
+
+def remove_tags(name: str, tags: List[str]) -> None:
+    """Remove tags from a collection.
+    
+    Args:
+        name: Collection name
+        tags: List of tag strings to remove
+    """
+    meta = load_collection_meta(name)
+    if "tags" not in meta or not meta["tags"]:
+        return
+    
+    # Normalize tags to remove
+    to_remove = {t.lower().replace(" ", "-").strip() for t in tags}
+    meta["tags"] = [t for t in meta["tags"] if t not in to_remove]
+    save_collection_meta(name, meta)
+
+
+def search_collections(
+    query: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    embedding_model: Optional[str] = None,
+    min_documents: Optional[int] = None,
+    max_documents: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Search/filter collections by various criteria.
+    
+    Args:
+        query: Optional text search on name/description
+        tags: Optional list of tags to filter by (any match)
+        embedding_model: Filter by embedding model used
+        min_documents: Minimum document count
+        max_documents: Maximum document count
+        
+    Returns:
+        List of matching collection metadata
+    """
+    all_collections = list_collections()
+    results = []
+    
+    # Normalize tags filter
+    if tags:
+        tag_filter = {t.lower().replace(" ", "-").strip() for t in tags}
+    else:
+        tag_filter = None
+    
+    query_lower = query.lower() if query else None
+    
+    for coll in all_collections:
+        # Text search
+        if query_lower:
+            name_match = query_lower in coll.get("name", "").lower()
+            desc_match = query_lower in coll.get("description", "").lower()
+            display_match = query_lower in coll.get("display_name", "").lower()
+            if not (name_match or desc_match or display_match):
+                continue
+        
+        # Tag filter (any tag matches)
+        if tag_filter:
+            coll_tags = set(t.lower() for t in coll.get("tags", []))
+            if not tag_filter & coll_tags:
+                continue
+        
+        # Embedding model filter
+        if embedding_model:
+            if embedding_model.lower() not in coll.get("embedding_model", "").lower():
+                continue
+        
+        # Document count filters
+        doc_count = coll.get("document_count", 0)
+        if min_documents is not None and doc_count < min_documents:
+            continue
+        if max_documents is not None and doc_count > max_documents:
+            continue
+        
+        results.append(coll)
+    
+    return results
+
+
+# ── Statistics ──────────────────────────────────────────────────────
+
+
+def get_collection_stats(name: str) -> Dict[str, Any]:
+    """Get comprehensive statistics for a collection.
+    
+    Returns:
+        Dict with collection statistics including:
+        - document_count, chunk_count
+        - source count, tag count
+        - embedding model info
+        - knowledge graph size
+        - age (days since creation)
+        - last update time
+    """
+    from datetime import datetime
+    
+    meta = load_collection_meta(name)
+    kg = load_kg(name)
+    
+    # Calculate age
+    created = meta.get("created", "")
+    age_days = None
+    if created:
+        try:
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - created_dt).days
+        except:
+            pass
+    
+    # Embeddings file size
+    emb_path = Path(_embeddings_path(name))
+    emb_size = emb_path.stat().st_size if emb_path.exists() else 0
+    
+    return {
+        "name": meta.get("name"),
+        "display_name": meta.get("display_name"),
+        "document_count": meta.get("document_count", 0),
+        "chunk_count": meta.get("chunk_count", 0),
+        "sources_count": len(meta.get("sources", [])),
+        "tags_count": len(meta.get("tags", [])),
+        "tags": meta.get("tags", []),
+        "embedding_model": meta.get("embedding_model", "unknown"),
+        "reranker_model": meta.get("reranker_model", "unknown"),
+        "knowledge_graph_size": len(kg),
+        "created": created,
+        "updated": meta.get("updated"),
+        "age_days": age_days,
+        "embeddings_file_bytes": emb_size,
+        "has_embeddings": emb_path.exists(),
+        "has_knowledge_graph": bool(kg),
+    }
+
+
+def get_global_stats() -> Dict[str, Any]:
+    """Get global statistics across all collections.
+    
+    Returns:
+        Dict with aggregated statistics:
+        - total_collections
+        - total_documents, total_chunks
+        - model breakdown
+        - tag distribution
+    """
+    all_collections = list_collections()
+    
+    total_docs = sum(c.get("document_count", 0) for c in all_collections)
+    total_chunks = sum(c.get("chunk_count", 0) for c in all_collections)
+    
+    # Model breakdown
+    model_counts = {}
+    for c in all_collections:
+        model = c.get("embedding_model", "unknown") or "unknown"
+        model_counts[model] = model_counts.get(model, 0) + 1
+    
+    # Tag distribution
+    tag_counts = {}
+    for c in all_collections:
+        for tag in c.get("tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    
+    return {
+        "total_collections": len(all_collections),
+        "total_documents": total_docs,
+        "total_chunks": total_chunks,
+        "average_documents": total_docs / len(all_collections) if all_collections else 0,
+        "average_chunks": total_chunks / len(all_collections) if all_collections else 0,
+        "model_distribution": model_counts,
+        "tag_distribution": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)),
+        "total_unique_tags": len(tag_counts),
+    }

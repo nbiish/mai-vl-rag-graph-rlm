@@ -36,6 +36,7 @@ def _get_default_model(provider: str) -> str:
         "sambanova": "SAMBANOVA_MODEL",
         "nebius": "NEBIUS_MODEL",
         "cerebras": "CEREBRAS_MODEL",
+        "ollama": "OLLAMA_MODEL",
     }
     env_var = env_var_map.get(provider, f"{provider.upper()}_MODEL")
     env_model = os.getenv(env_var)
@@ -58,6 +59,7 @@ def _get_default_model(provider: str) -> str:
         "sambanova": "DeepSeek-V3-0324",  # DeepSeek V3 on SambaNova (32K+ context, production)
         "nebius": "MiniMaxAI/MiniMax-M2.1",  # MiniMax M2.1 on Nebius Token Factory
         "cerebras": "zai-glm-4.7",  # GLM 4.7 355B on Cerebras wafer-scale (~1000 tok/s)
+        "ollama": "llama3.2",
     }
     return hardcoded_defaults.get(provider, "gpt-4o-mini")
 
@@ -89,6 +91,7 @@ def _get_recursive_model(provider: str, primary_model: str) -> str:
         "cerebras": "gpt-oss-120b",  # Ultra-fast on Cerebras (~3000 tok/s)
         "sambanova": "DeepSeek-V3.1",  # Latest DeepSeek on SambaNova
         "nebius": "zai-org/GLM-4.7-FP8",  # GLM 4.7 on Nebius Token Factory
+        "ollama": "llama3.2",
     }
     return hardcoded_recursive.get(provider, primary_model)
 
