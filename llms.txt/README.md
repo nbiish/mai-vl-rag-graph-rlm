@@ -71,10 +71,12 @@ Audio transcription now routes through the full omni chain — no more silent fa
 - **Progress bars** — tqdm integration for embedding/search operations
 
 ### 🎯 Smart Defaults (New!)
-- **Configuration profiles** — `--profile {fast,balanced,thorough,comprehensive}` presets
+- **Configuration profiles** — `--profile {fast,comprehensive}` presets (only 2 choices)
 - **Comprehensive by default** — All best features enabled automatically (multi-query, graph-augmented, deep reasoning)
+- **Simplified MCP server** — 3 consolidated tools for reduced context usage: `analyze`, `query_collection`, `collection_manage`
 - **API hierarchy default** — Provider auto-fallback enabled by default (set keys in .env)
-- **MCP streamlined server** — 4 consolidated tools instead of 11+ for reduced context usage
+
+**For LLMs**: See **[QUICKREF.md](QUICKREF.md)** for ultra-simplified 3-tool reference with mode selection rules.
 
 ### 🤖 New Providers
 - **Ollama** — Local LLM inference support (`--provider ollama`)
@@ -123,6 +125,7 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 
 | File | Purpose |
 |------|---------|
+| **[QUICKREF.md](QUICKREF.md)** | **Start here for LLMs** — Ultra-simplified 3-tool reference, what works, mode selection rules |
 | **[README.md](README.md)** | Documentation index — quick navigation, what's new, key capabilities |
 | **[PRD.md](PRD.md)** | Product Requirements — six-pillar architecture, 17 providers, CLI, collections, future plans |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | System architecture — diagrams, component map, pipeline flow, collection internals, CLI reference |
@@ -133,6 +136,11 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 | **[SECURITY.md](../SECURITY.md)** | Local security orchestration — secret scanning, sanitization, OWASP compliance |
 
 ## Quick Navigation
+
+### For LLMs (Start Here)
+- **[QUICKREF.md](QUICKREF.md)** → Ultra-simplified 3-tool reference (`analyze`, `query_collection`, `collection_manage`)
+- **Mode selection**: Always use `comprehensive` (default). Only use `fast` when user explicitly requests speed.
+- **What works**: 9/9 providers, collections, fallback keys, API embedding all verified working.
 
 ### For Users
 - **Getting started:** [PRD.md](PRD.md) → system overview, CLI examples, provider list

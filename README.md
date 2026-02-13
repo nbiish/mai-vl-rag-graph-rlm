@@ -668,11 +668,11 @@ VRLMRAG_VLM_FALLBACK_MODEL=moonshotai/kimi-k2.5
 
 ### MCP Server Configuration
 
+MCP server uses provider/model settings from `.env` file only. Configure there, not via MCP parameters.
+
 ```bash
 # MCP Server configuration (per-client via mcp_config.json env block)
 VRLMRAG_ROOT=/path/to/repo              # Required: finds .env file
-VRLMRAG_PROVIDER=auto                   # Provider for MCP tools
-VRLMRAG_MODEL=null                      # Model override
 VRLMRAG_TEMPLATE=null                   # Template shorthand
 VRLMRAG_MAX_DEPTH=3                     # RLM recursion depth
 VRLMRAG_MAX_ITERATIONS=10               # RLM iterations
@@ -875,7 +875,7 @@ Add to your MCP client config (e.g., `~/.config/windsurf/mcp_config.json`):
 - `VRLMRAG_LOCAL=true` — Use local models instead of API hierarchy (default: false)
 - `VRLMRAG_COLLECTIONS=false` — Disable collection tools (default: true)
 
-**Note:** The server always uses comprehensive analysis (max_depth=5, max_iterations=15, multi-query, graph-augmented) with API provider hierarchy. Only local mode and collections are configurable.
+**Note:** The server always uses comprehensive analysis (max_depth=5, max_iterations=15, multi-query, graph-augmented) with API provider hierarchy from `.env`. Provider and model are configured via `.env` file only — MCP tools do not accept provider/model parameters.
 
 ## Documentation
 

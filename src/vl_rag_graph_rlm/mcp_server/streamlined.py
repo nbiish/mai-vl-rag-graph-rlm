@@ -112,34 +112,18 @@ async def analyze(
     input_path: str,
     query: Optional[str] = None,
     mode: str = "comprehensive",
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
-    """Comprehensive document analysis using the full VL-RAG-Graph-RLM pipeline.
-
-    Default is comprehensive — full vision, audio, RAG, graph, and recursive LLM analysis.
-    Use mode='fast' for quick search when speed is prioritized over depth.
-
-    Comprehensive mode automatically enables:
-    - Multi-query retrieval for broader recall
-    - Graph-augmented context expansion (3-hop traversal)
-    - Deep RLM recursion (depth=5, iterations=15)
-    - API provider hierarchy with auto-fallback
-
+    """Analyze documents. Default is comprehensive — use mode='fast' only if user requests speed.
+    
     Args:
-        input_path: Path to file or folder to analyze
+        input_path: Path to file or folder
         query: Question to answer (auto-generated if not provided)
-        mode: Analysis depth — comprehensive (default) or fast for quick search
-        provider: LLM provider override (default: auto/hierarchy)
-        model: Model name override
-        output_path: Optional path to save markdown report
-
-    Returns:
-        Analysis result with source attribution
+        mode: comprehensive (default) or fast
+        output_path: Optional path to save report
     """
     settings = _get_settings(ctx)
-    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+    eff_provider, eff_model = _effective_provider_model(settings)
     
     # Map modes to profile settings
     profile_settings = {
@@ -210,26 +194,16 @@ async def query_collection(
     collection: str,
     query: str,
     mode: str = "comprehensive",
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
 ) -> str:
-    """Comprehensive knowledge collection querying.
-
-    Default is comprehensive — full RAG, graph, and recursive LLM analysis.
-    Use mode='fast' for quick search when speed is prioritized over depth.
+    """Query knowledge collections. Default is comprehensive — use mode='fast' only if user requests speed.
 
     Args:
-        collection: Collection name (creates if doesn't exist)
-        query: Question to answer about the collection
-        mode: Analysis depth — comprehensive (default) or fast for quick search
-        provider: LLM provider override
-        model: Model name override
-
-    Returns:
-        Answer with source attribution
+        collection: Collection name
+        query: Question to answer
+        mode: comprehensive (default) or fast
     """
     settings = _get_settings(ctx)
-    eff_provider, eff_model = _effective_provider_model(settings, provider, model)
+    eff_provider, eff_model = _effective_provider_model(settings)
     
     # Create collection if it doesn't exist
     if not collection_exists(collection):
@@ -271,25 +245,14 @@ async def query_collection(
 @mcp.tool()
 async def collection_manage(
     ctx: Context,
-    action: str,  # add, list, info, delete, export, import, merge, tag, search
+    action: str,
     collection: Optional[str] = None,
     path: Optional[str] = None,
     query: Optional[str] = None,
     tags: Optional[List[str]] = None,
     target_collection: Optional[str] = None,
 ) -> str:
-    """Manage collections with unified operations.
-    
-    Single tool for all collection management:
-    - add: Add documents at path to collection
-    - list: Show all collections
-    - info: Show collection details
-    - delete: Remove collection
-    - export: Export to tar.gz
-    - import: Import from tar.gz
-    - merge: Merge source into target
-    - tag: Add tags to collection
-    - search: Find collections by query/tags
+    """Manage collections: add, list, info, delete, export, import, merge, tag, search.
     
     Args:
         action: Operation to perform
@@ -298,9 +261,6 @@ async def collection_manage(
         query: Search query (for search action)
         tags: Tags to add (for tag action) or filter (for search)
         target_collection: Target for merge operation
-        
-    Returns:
-        Operation result
     """
     settings = _get_settings(ctx)
     
