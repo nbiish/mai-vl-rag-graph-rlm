@@ -2,6 +2,46 @@
 
 > Keep tasks atomic and testable.
 
+## Summary — Feb 12, 2026 Late Session (MCP Simplification & Documentation)
+
+**Session Focus**: Simplified MCP tools, removed provider/model parameters, updated documentation
+
+### Completed Work
+
+1. **Simplified MCP Tool Definitions**
+   - Removed `provider` and `model` parameters from `analyze` and `query_collection` tools
+   - Provider/model now configured exclusively via `.env` files (as originally intended)
+   - Updated docstrings to be token-efficient for smaller LLMs
+   - Files: `src/vl_rag_graph_rlm/mcp_server/streamlined.py`
+
+2. **Updated Documentation**
+   - `llms.txt/QUICKREF.md`: Removed provider/model params, added note about `.env` configuration
+   - `README.md`: Updated MCP server section to remove VRLMRAG_PROVIDER and VRLMRAG_MODEL
+   - Both files now clearly state: "Provider and model are configured via `.env` file only"
+
+3. **Fixed Timeout Handling Bug**
+   - Fixed `_is_reasoning_model()` method signature (was @staticmethod with self parameter)
+   - File: `src/vl_rag_graph_rlm/clients/openai_compatible.py`
+
+### Known Issues / Needs Fix
+
+1. **MCP Server Caching Issue** ⚠️
+   - **Status**: CLI works perfectly; MCP server fails with `resolve_auto_provider` not defined
+   - **Root Cause**: Python bytecode caching in uv/MCP environment
+   - **Impact**: MCP tools cannot be tested via Windsurf integration
+   - **Attempted Fixes**:
+     - Cleared `__pycache__` and `*.pyc` files multiple times
+     - Added local `_resolve_auto_provider()` implementations to both `server.py` and `streamlined.py`
+     - Added fallback check in `vrlmrag.py`
+   - **Next Steps**: Requires uv cache clear or fresh environment
+
+2. **FlashRank Dependency** ⚠️
+   - **Status**: Not installed by default
+   - **Fix**: `uv pip install -e ".[reranker]"`
+   - Should be added to default dependencies or better documented
+
+---
+
 ## Summary — Feb 12, 2026 Evening Session (Bug Fix & Testing)
 
 **Session Focus**: CLI Bug Fixes, Collection Testing, Documentation Updates

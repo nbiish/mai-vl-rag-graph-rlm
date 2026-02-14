@@ -303,7 +303,6 @@ class OpenAICompatibleClient(BaseLM):
             self.api_key = self._fallback_api_key
             return response.choices[0].message.content
 
-    @staticmethod
     def _is_reasoning_model(self, model_name: str | None) -> bool:
         """Check if model is a long-term thinking/reasoning model needing extended timeout.
         

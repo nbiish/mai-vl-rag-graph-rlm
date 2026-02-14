@@ -66,6 +66,15 @@ from vl_rag_graph_rlm.clients.hierarchy import (
     resolve_auto_provider,
     PROVIDER_KEY_MAP,
 )
+
+# Ensure resolve_auto_provider is available (fallback for MCP context)
+if 'resolve_auto_provider' not in dir():
+    def resolve_auto_provider() -> str:
+        """Fallback implementation when import fails."""
+        available = get_available_providers()
+        if not available:
+            raise RuntimeError("No providers available")
+        return available[0]
 from vl_rag_graph_rlm.rag import (
     CompositeReranker,
     SearchResult,

@@ -243,7 +243,30 @@ class VLRAGGraphRLM:
         Returns:
             RLMChatCompletion with answer and metadata
         """
-        return asyncio.run(self.acompletion(query, context, **kwargs))
+        # Check if we're already in an async context (e.g., MCP server)
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context - need to nest the loop
+            import nest_asyncio
+            nest_asyncio.apply()
+            return asyncio.run(self.acompletion(query, context, **kwargs))
+        except ImportError:
+            # nest_asyncio not available - try to get current loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Can't run in running loop - raise error with helpful message
+                    raise RuntimeError(
+                        "Cannot call completion() from within a running event loop. "
+                        "Use acompletion() instead, or install nest_asyncio: pip install nest_asyncio"
+                    )
+                return loop.run_until_complete(self.acompletion(query, context, **kwargs))
+            except RuntimeError:
+                # No loop exists - use asyncio.run
+                return asyncio.run(self.acompletion(query, context, **kwargs))
+        except RuntimeError:
+            # No event loop running - safe to use asyncio.run
+            return asyncio.run(self.acompletion(query, context, **kwargs))
 
     async def acompletion(
         self,

@@ -81,6 +81,37 @@ mcp = FastMCP(
 )
 
 
+def _resolve_auto_provider() -> str:
+    """Local implementation to resolve auto provider without import dependency."""
+    import os
+    hierarchy = [
+        "modalresearch", "sambanova", "nebius", "ollama", "groq",
+        "cerebras", "zai", "zenmux", "openrouter", "gemini",
+        "deepseek", "openai", "anthropic"
+    ]
+    key_map = {
+        "modalresearch": "MODAL_RESEARCH_API_KEY",
+        "sambanova": "SAMBANOVA_API_KEY",
+        "nebius": "NEBIUS_API_KEY",
+        "ollama": "OLLAMA_ENABLED",
+        "groq": "GROQ_API_KEY",
+        "cerebras": "CEREBRAS_API_KEY",
+        "zai": "ZAI_API_KEY",
+        "zenmux": "ZENMUX_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "gemini": "GOOGLE_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+    }
+    for provider in hierarchy:
+        env_key = key_map.get(provider, f"{provider.upper()}_API_KEY")
+        val = os.getenv(env_key, "")
+        if val and not val.startswith("your_"):
+            return provider
+    return "openrouter"  # fallback
+
+
 def _effective_provider_model(
     settings: MCPSettings,
     provider_override: Optional[str] = None,
@@ -91,7 +122,7 @@ def _effective_provider_model(
     provider = provider_override or base_provider
     model = model_override or base_model
     if provider == "auto":
-        provider = resolve_auto_provider()
+        provider = _resolve_auto_provider()
     return provider, model
 
 
