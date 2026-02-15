@@ -2,6 +2,61 @@
 
 > Keep tasks atomic and testable.
 
+## Summary — Feb 15, 2026 (Production Validation Scope Lock)
+
+**Session Focus**: Lock production testing to user-facing search modes only, avoid provider hierarchy/rate-limit benchmarking during readiness gates, and keep resilience logic as safety backup.
+
+### Completed changes
+
+1. **Benchmark modes narrowed to production scope**
+   - `tests/full_matrix_benchmark.py` now exercises only:
+     - `balanced`
+     - `comprehensive`
+   - Both `--phase pre_final` and `--phase final_confirmation` now map to the same two production modes.
+   - Removed `expanded_comprehensive` from the benchmark profile map and report overhead section.
+
+2. **Smoke test default aligned to hierarchy route**
+   - `tests/provider_api_smoke.py` default providers changed to:
+     - `auto`
+   - Per-provider matrix validation remains optional (manual), not part of default production gate.
+
+3. **Testing docs aligned**
+   - `tests/README.md` now documents:
+     - Gate A defaulting to hierarchy-route smoke (`auto`)
+     - production modes only for benchmark phases
+     - stage/category metadata output (no expanded/comprehensive overhead section)
+
+4. **llms.txt strategy doc aligned**
+   - `llms.txt/API_TESTING_PERF_RATE_LIMITS.md` now states:
+     - Gate B is hierarchy-route readiness smoke (`provider=auto`)
+     - Gate C is `balanced` + `comprehensive` only
+     - rate-limit references are retained for safety/backoff policy, not benchmark targets
+
+### Execution snapshot (Feb 15, 2026)
+
+1. **Gate A (hierarchy-route smoke)**
+   - Command: `python tests/provider_api_smoke.py --timeout 90`
+   - Result: `auto` route success (~13.0s)
+
+2. **Final confirmation (production modes only)**
+   - Command: `python tests/full_matrix_benchmark.py --phase final_confirmation --provider auto --video-timeout 120`
+   - PPTX:
+     - `balanced`: success (~52.0s)
+     - `comprehensive`: success (~71.3s)
+   - Video:
+     - `balanced`: success (~67.1s)
+     - `comprehensive`: timeout (120s)
+   - Runtime media behavior:
+     - `Skipping omni audio upload: payload too large ...` guard triggered
+     - avoids previous large-request omni failures (`RESOURCE_EXHAUSTED` ceiling path)
+
+3. **Media overload mitigation added**
+   - Added audio upload guard in `src/vl_rag_graph_rlm/rag/api_embedding.py`:
+     - skips omni audio upload when file size exceeds `VRLMRAG_OMNI_MAX_AUDIO_BYTES`
+     - default: 20 MB (conservative to stay under provider request-size ceilings after base64 expansion)
+   - Clarified failure interpretation:
+     - current ZenMux errors indicate request payload-size limits, not necessarily 64k text-context-window overflow.
+
 ## Summary — Feb 15, 2026 (API-Only Testing + Performance/Rust + Rate Limits)
 
 **Session Focus**: Restrict validation scope to API paths for CLI/MCP, review benchmark failures from terminal outputs, and produce an actionable performance plan including Rust integration and provider rate-limit verification.

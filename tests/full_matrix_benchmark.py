@@ -3,7 +3,7 @@
 
 Runs timed validation across:
 - Content: PowerPoint + Video
-- Modes: balanced, comprehensive, expanded_comprehensive
+- Modes: balanced, comprehensive
 
 Each test runs in an isolated process with timeout to avoid hangs.
 """
@@ -53,15 +53,6 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "multi_query": True,
         "graph_augmented": True,
         "graph_hops": 2,
-        "use_api": True,
-        "text_only": False,
-    },
-    "expanded_comprehensive": {
-        "max_depth": 7,
-        "max_iterations": 22,
-        "multi_query": True,
-        "graph_augmented": True,
-        "graph_hops": 4,
         "use_api": True,
         "text_only": False,
     },
@@ -173,8 +164,8 @@ def run_api_preflight(content_type: str, provider: str, timeout_seconds: int) ->
 
 
 PHASE_MODES: Dict[str, list[str]] = {
-    # Pre-final gate: validated MCP-exposed modes + expansion stress profile
-    "pre_final": ["balanced", "comprehensive", "expanded_comprehensive"],
+    # Pre-final gate: production-facing MCP modes only
+    "pre_final": ["balanced", "comprehensive"],
     # Final confirmation: consolidated user-facing modes only
     "final_confirmation": ["balanced", "comprehensive"],
 }
@@ -303,12 +294,12 @@ def main() -> None:
         "--phase",
         choices=sorted(PHASE_MODES.keys()),
         default="pre_final",
-        help="pre_final (includes expanded stress profile) or final_confirmation",
+        help="pre_final or final_confirmation (both run balanced + comprehensive)",
     )
     parser.add_argument(
         "--provider",
-        default="openrouter",
-        help="Provider used for benchmark analysis and preflight (default: openrouter)",
+        default="auto",
+        help="Provider route for analysis (default: auto = hierarchy mode)",
     )
     parser.add_argument(
         "--pptx-timeout",
@@ -440,17 +431,6 @@ def main() -> None:
             f"| {r.content_type} | {r.mode} | {r.status} | {r.stage} | {r.failure_category or ''} | {r.duration_seconds:.1f} | "
             f"{r.document_count} | {r.chunk_count} | {r.query_count} | {r.error or ''} |"
         )
-
-    # overhead section
-    for ctype in {r.content_type for r in all_results}:
-        comp = next((r for r in all_results if r.content_type == ctype and r.mode == "comprehensive" and r.status == "success"), None)
-        exp = next((r for r in all_results if r.content_type == ctype and r.mode == "expanded_comprehensive" and r.status == "success"), None)
-        if comp and exp and comp.duration_seconds > 0:
-            overhead = exp.duration_seconds / comp.duration_seconds
-            lines.extend([
-                "",
-                f"- {ctype}: expanded/comprehensive overhead = **{overhead:.2f}x**",
-            ])
 
     out_md.write_text("\n".join(lines) + "\n")
 

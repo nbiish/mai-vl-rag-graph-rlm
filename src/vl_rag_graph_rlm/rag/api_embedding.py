@@ -48,6 +48,9 @@ import httpx
 # Timeouts (seconds) — prevent hanging on slow/broken providers
 _EMBEDDING_TIMEOUT = 30.0
 _VLM_TIMEOUT = 60.0  # generous for video frame processing
+# Keep audio upload well below known provider request-size ceilings after base64 expansion.
+# Override via env if your account/model supports larger payloads.
+_OMNI_AUDIO_MAX_BYTES = int(os.getenv("VRLMRAG_OMNI_MAX_AUDIO_BYTES", str(20 * 1024 * 1024)))
 # Circuit breaker: disable VLM after this many consecutive failures
 _VLM_MAX_CONSECUTIVE_FAILURES = 3
 
@@ -385,7 +388,7 @@ class APIEmbeddingProvider:
         # Convert audio to data URI if it's a file path
         audio_url = self._to_audio_url(audio)
         if not audio_url:
-            return "(audio transcription unavailable — file conversion failed)"
+            return "(audio transcription unavailable — file conversion failed or payload too large)"
 
         prompt = instruction or _AUDIO_TRANSCRIBE_PROMPT
 
@@ -478,6 +481,15 @@ class APIEmbeddingProvider:
                 return audio
             path = Path(audio)
             if path.is_file():
+                audio_bytes = path.stat().st_size
+                if audio_bytes > _OMNI_AUDIO_MAX_BYTES:
+                    logger.warning(
+                        "Skipping omni audio upload: payload too large (%d bytes > %d bytes). "
+                        "Set VRLMRAG_OMNI_MAX_AUDIO_BYTES to override.",
+                        audio_bytes,
+                        _OMNI_AUDIO_MAX_BYTES,
+                    )
+                    return None
                 # Read and encode audio file
                 data = path.read_bytes()
                 suffix = path.suffix.lower().lstrip(".")

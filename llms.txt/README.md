@@ -145,7 +145,7 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 
 ### Test Orchestration (PPTX + Video)
 - **Pre-final gate**: `python tests/full_matrix_benchmark.py --phase pre_final`
-  - Modes: `balanced`, `comprehensive`, `expanded_comprehensive`
+  - Modes: `balanced`, `comprehensive`
 - **Final confirmation gate**: `python tests/full_matrix_benchmark.py --phase final_confirmation`
   - Modes: `balanced`, `comprehensive`
 - Legacy wrappers: `tests/benchmark_modes.py` and `tests/timing_test.py` delegate to the canonical orchestrator.

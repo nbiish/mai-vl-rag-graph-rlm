@@ -15,7 +15,7 @@ It runs timed validation on the two core multimodal assets:
 
 ```bash
 python tests/provider_api_smoke.py \
-  --providers openrouter sambanova nebius groq cerebras zai zenmux \
+  --providers auto \
   --timeout 90
 ```
 
@@ -27,7 +27,7 @@ Output:
 ```bash
 python tests/full_matrix_benchmark.py \
   --phase pre_final \
-  --provider openrouter \
+  --provider auto \
   --api-preflight-timeout 20 \
   --media-preflight-timeout 45 \
   --pptx-timeout 180 \
@@ -37,14 +37,14 @@ python tests/full_matrix_benchmark.py \
 ### Gate C) Final confirmation benchmark
 
 ```bash
-python tests/full_matrix_benchmark.py --phase final_confirmation --provider openrouter
+python tests/full_matrix_benchmark.py --phase final_confirmation --provider auto
 ```
 
 ## Phases
 
 ### 1) Pre-final gate
 
-Use this before final confirmation to validate standard and expanded depth:
+Use this before final confirmation to validate production modes:
 
 ```bash
 python tests/full_matrix_benchmark.py --phase pre_final
@@ -53,7 +53,6 @@ python tests/full_matrix_benchmark.py --phase pre_final
 Profiles exercised:
 - `balanced`
 - `comprehensive`
-- `expanded_comprehensive` (stress/depth profile)
 
 ### 2) Final confirmation gate
 
@@ -80,7 +79,7 @@ Each run writes:
 - `tests/full_matrix_benchmark_results.json`
 - `tests/full_matrix_benchmark_results.md`
 
-The markdown report includes per-content timing and expanded/comprehensive overhead where available.
+The markdown report includes per-content timing and stage/category failure metadata.
 
 ## Failure Categories (full_matrix_benchmark)
 

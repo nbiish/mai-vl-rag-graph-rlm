@@ -9,12 +9,21 @@ No local/offline model paths are included in final readiness testing.
 
 ## What the latest terminal/testing outputs show
 
-From current benchmark runs (`tests/full_matrix_benchmark.py`):
+From latest focused production runs:
 
-- Pre-final matrix ended with **100% timeouts** for PPTX and video.
-- Video path repeatedly logged provider issues before timeout:
-  - OpenRouter primary model fallback events (`z-ai/glm-5` -> `deepseek/deepseek-v3.2`).
-  - ZenMux audio/transcription failures including payload-size exhaustion and invalid fallback model.
+1. **Gate A smoke (`tests/provider_api_smoke.py`)**
+   - `auto` (provider hierarchy route): success in ~13.0s.
+
+2. **Gate C/final-confirmation benchmark (`tests/full_matrix_benchmark.py --phase final_confirmation --provider auto`)**
+   - PPTX:
+     - `balanced`: success (~52.0s)
+     - `comprehensive`: success (~71.3s)
+   - Video:
+     - `balanced`: success (~67.1s)
+     - `comprehensive`: timeout at 120s *(this run used `--video-timeout 120` for faster iteration)*
+   - Runtime media behavior:
+     - audio upload guard triggered before omni call (`Skipping omni audio upload: payload too large`)
+     - avoids prior large-request failure path (`RESOURCE_EXHAUSTED`, 33,554,432-byte request ceiling)
 
 Result artifacts:
 - `tests/full_matrix_benchmark_results.md`
@@ -30,13 +39,13 @@ Result artifacts:
    - Provider key presence and model resolution checks.
 
 2. **Gate B: API smoke execution (5-10 min) — required on every change**
-   - PPTX only, `balanced` mode only.
-   - Single provider at a time (start with the highest-stability provider in hierarchy).
+   - Tiny text input with normal system route (`provider=auto`, hierarchy enabled).
+   - Validate intended production behavior; do not run provider-by-provider matrix testing in this gate.
    - Tight timeout and immediate fail on transport/auth/model-not-found errors.
 
 3. **Gate C: Full multimodal benchmark (scheduled/manual)**
    - PPTX + video.
-   - `balanced` and `comprehensive`; `expanded_comprehensive` only for stress windows.
+   - `balanced` and `comprehensive` only.
    - Run only after Gate A/B pass.
 
 ### 2) Enforce API-only in test harnesses
@@ -87,6 +96,7 @@ Use Rust where orchestration and parsing overhead is highest, while keeping LLM 
 ## Verified rate-limit and quota references
 
 > Note: many providers expose exact numeric limits per account tier and model in dashboard pages. Store those account-specific values internally after retrieval.
+> Operational policy for production validation: keep these limits as safety/backoff guidance, not as an active benchmark target.
 
 ### OpenRouter
 - Doc: https://openrouter.ai/docs/api/reference/limits
@@ -155,6 +165,7 @@ Use Rust where orchestration and parsing overhead is highest, while keeping LLM 
 - Observed runtime evidence from current terminal output indicates:
   - audio payload size rejection (`RESOURCE_EXHAUSTED` with 33,554,432-byte ceiling reported in error body)
   - invalid fallback model configuration paths (404 invalid_model)
+- Interpretation: this failure signature is request-size/payload bound, not evidence that the 64k text context window is being exceeded.
 - Action: capture ZenMux account-level limits and model availability matrix from provider console/docs and pin supported fallback models in `.env`.
 
 ## Immediate next implementation actions
@@ -162,5 +173,5 @@ Use Rust where orchestration and parsing overhead is highest, while keeping LLM 
 1. Add **API preflight** stage to benchmark runner before document processing.
 2. Add **error taxonomy fields** to benchmark JSON/markdown output.
 3. Add separate **media-transcription timeout** and **overall query timeout**.
-4. Add **provider-specific smoke script** (single tiny prompt per provider) to fail fast.
+4. Add **hierarchy-route smoke script** (tiny prompt, `provider=auto`) to fail fast before multimodal runs.
 5. Start a Rust sidecar crate for orchestration/timeouts/structured metrics, invoked from Python.

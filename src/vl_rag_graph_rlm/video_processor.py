@@ -72,6 +72,51 @@ class AsyncVideoProcessor:
             except Exception:
                 # Don't let callback errors break processing
                 pass
+
+    @staticmethod
+    def _build_labeled_transcript_chunks(transcript: str, target_chars: int = 500) -> List[Dict[str, Any]]:
+        """Split transcript into labeled logical segments for retrieval traceability."""
+        words = transcript.split()
+        if not words:
+            return []
+
+        chunks: List[Dict[str, Any]] = []
+        chunk_words: List[str] = []
+        segment_idx = 1
+        start_word_idx = 0
+
+        for word_idx, word in enumerate(words):
+            chunk_words.append(word)
+            if len(" ".join(chunk_words)) >= target_chars:
+                chunk_text = " ".join(chunk_words).strip()
+                if chunk_text:
+                    chunks.append(
+                        {
+                            "content": chunk_text,
+                            "type": "transcript",
+                            "label": f"transcript_segment_{segment_idx:03d}",
+                            "segment_index": segment_idx,
+                            "word_range": [start_word_idx, word_idx],
+                        }
+                    )
+                    segment_idx += 1
+                chunk_words = []
+                start_word_idx = word_idx + 1
+
+        if chunk_words:
+            chunk_text = " ".join(chunk_words).strip()
+            if chunk_text:
+                chunks.append(
+                    {
+                        "content": chunk_text,
+                        "type": "transcript",
+                        "label": f"transcript_segment_{segment_idx:03d}",
+                        "segment_index": segment_idx,
+                        "word_range": [start_word_idx, len(words) - 1],
+                    }
+                )
+
+        return chunks
     
     async def process_video(
         self,
@@ -172,21 +217,7 @@ class AsyncVideoProcessor:
             
             if transcript:
                 doc["content"] = transcript
-                # Chunk transcript into ~500-char segments
-                words = transcript.split()
-                chunk_words = []
-                chunks = []
-                for word in words:
-                    chunk_words.append(word)
-                    if len(" ".join(chunk_words)) >= 500:
-                        chunk_text = " ".join(chunk_words)
-                        chunks.append({"content": chunk_text, "type": "transcript"})
-                        chunk_words = []
-                if chunk_words:
-                    chunk_text = " ".join(chunk_words)
-                    if chunk_text.strip():
-                        chunks.append({"content": chunk_text, "type": "transcript"})
-                doc["chunks"] = chunks
+                doc["chunks"] = self._build_labeled_transcript_chunks(transcript, target_chars=500)
             else:
                 doc["content"] = f"[Video: {video_path.name}]"
             

@@ -139,8 +139,8 @@ def main() -> None:
     parser.add_argument(
         "--providers",
         nargs="+",
-        default=["openrouter", "sambanova", "nebius", "groq", "cerebras", "zai", "zenmux"],
-        help="Providers to smoke test in order",
+        default=["auto"],
+        help="Provider routes to smoke test (default: auto = hierarchy mode)",
     )
     parser.add_argument(
         "--timeout",

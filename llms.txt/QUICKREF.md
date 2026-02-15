@@ -118,7 +118,7 @@
 Use a single orchestrator for pre-final and final gates:
 
 ```bash
-# Pre-final: balanced + comprehensive + expanded_comprehensive
+# Pre-final: balanced + comprehensive
 python tests/full_matrix_benchmark.py --phase pre_final
 
 # Final confirmation: balanced + comprehensive only

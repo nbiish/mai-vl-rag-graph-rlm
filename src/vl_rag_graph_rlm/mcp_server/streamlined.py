@@ -142,31 +142,31 @@ async def analyze(
     ctx: Context,
     input_path: str,
     query: Optional[str] = None,
-    mode: str = "balanced",
+    mode: str = "fast",
     output_path: Optional[str] = None,
 ) -> str:
-    """Analyze documents. Default is balanced — use mode='comprehensive' for deep analysis.
+    """Analyze documents. Default is fast — use mode='comprehensive' for deep analysis.
     
     Args:
         input_path: Path to file or folder
         query: Question to answer (auto-generated if not provided)
-        mode: balanced (default) or comprehensive
+        mode: fast (default) or comprehensive
         output_path: Optional path to save report
     """
     settings = _get_settings(ctx)
     eff_provider, eff_model = _effective_provider_model(settings)
 
     canonical_mode = mode.strip().lower()
-    if canonical_mode not in {"balanced", "comprehensive"}:
-        return f"Error: Unknown mode '{mode}'. Use: balanced or comprehensive"
+    if canonical_mode not in {"fast", "comprehensive"}:
+        return f"Error: Unknown mode '{mode}'. Use: fast or comprehensive"
 
     profile_settings = {
-        "balanced": {
-            "max_depth": 3,
-            "max_iterations": 8,
-            "multi_query": True,
-            "graph_augmented": True,
-            "graph_hops": 2,
+        "fast": {
+            "max_depth": 2,
+            "max_iterations": 5,
+            "multi_query": False,
+            "graph_augmented": False,
+            "graph_hops": 1,
         },
         "comprehensive": {
             "max_depth": 5,
@@ -230,14 +230,14 @@ async def query_collection(
     ctx: Context,
     collection: str,
     query: str,
-    mode: str = "balanced",
+    mode: str = "fast",
 ) -> str:
-    """Query knowledge collections. Default is balanced — use mode='comprehensive' for deep analysis.
+    """Query knowledge collections. Default is fast — use mode='comprehensive' for deep analysis.
 
     Args:
         collection: Collection name
         query: Question to answer
-        mode: balanced (default) or comprehensive
+        mode: fast (default) or comprehensive
     """
     settings = _get_settings(ctx)
     eff_provider, eff_model = _effective_provider_model(settings)
@@ -248,11 +248,11 @@ async def query_collection(
         return f"Collection '{collection}' created. Add documents with: collection_add"
     
     canonical_mode = mode.strip().lower()
-    if canonical_mode not in {"balanced", "comprehensive"}:
-        return f"Error: Unknown mode '{mode}'. Use: balanced or comprehensive"
+    if canonical_mode not in {"fast", "comprehensive"}:
+        return f"Error: Unknown mode '{mode}'. Use: fast or comprehensive"
 
     profile_settings = {
-        "balanced": {"max_depth": 3, "max_iterations": 8, "multi_query": True, "graph_augmented": True},
+        "fast": {"max_depth": 2, "max_iterations": 5, "multi_query": False, "graph_augmented": False},
         "comprehensive": {"max_depth": 5, "max_iterations": 15, "multi_query": True, "graph_augmented": True},
     }
 

@@ -684,6 +684,77 @@ class DocumentProcessor:
         
         return frames
 
+    @staticmethod
+    def _build_labeled_transcript_chunks(transcript: str, target_chars: int = 500) -> List[dict]:
+        """Split transcript into logical labeled segments for retrieval + auditability."""
+        words = transcript.split()
+        if not words:
+            return []
+
+        chunks: List[dict] = []
+        chunk_words: List[str] = []
+        segment_idx = 1
+        start_word_idx = 0
+
+        for word_idx, word in enumerate(words):
+            chunk_words.append(word)
+            if len(" ".join(chunk_words)) >= target_chars:
+                chunk_text = " ".join(chunk_words).strip()
+                if chunk_text:
+                    chunks.append(
+                        {
+                            "content": chunk_text,
+                            "type": "transcript",
+                            "label": f"transcript_segment_{segment_idx:03d}",
+                            "segment_index": segment_idx,
+                            "word_range": [start_word_idx, word_idx],
+                        }
+                    )
+                    segment_idx += 1
+                chunk_words = []
+                start_word_idx = word_idx + 1
+
+        if chunk_words:
+            chunk_text = " ".join(chunk_words).strip()
+            if chunk_text:
+                chunks.append(
+                    {
+                        "content": chunk_text,
+                        "type": "transcript",
+                        "label": f"transcript_segment_{segment_idx:03d}",
+                        "segment_index": segment_idx,
+                        "word_range": [start_word_idx, len(words) - 1],
+                    }
+                )
+
+        return chunks
+
+    @staticmethod
+    def _build_labeled_frame_chunks(frame_paths: List[str], fps: float = 0.5) -> List[dict]:
+        """Create labeled frame segment chunks so video context is traceable in retrieval."""
+        if not frame_paths:
+            return []
+
+        interval_seconds = 1.0 / fps if fps > 0 else 2.0
+        chunks: List[dict] = []
+
+        for idx, frame_path in enumerate(frame_paths, start=1):
+            approx_ts = int((idx - 1) * interval_seconds)
+            chunks.append(
+                {
+                    "content": (
+                        f"Video segment {idx:03d} at ~{approx_ts}s. "
+                        f"Frame reference: {Path(frame_path).name}."
+                    ),
+                    "type": "video_frame",
+                    "label": f"video_segment_{idx:03d}",
+                    "segment_index": idx,
+                    "timestamp_seconds": approx_ts,
+                }
+            )
+
+        return chunks
+
     def _process_media(self, file_path: Path) -> dict:
         """Process an audio or video file.
 
@@ -761,7 +832,8 @@ class DocumentProcessor:
             frame_paths: List[str] = []
             if is_video:
                 print(f"  [media] Extracting key frames...")
-                frame_paths = self._extract_frames_ffmpeg(str(file_path))
+                frame_fps = 0.5
+                frame_paths = self._extract_frames_ffmpeg(str(file_path), fps=frame_fps)
                 print(f"  [media] Extracted {len(frame_paths)} frames")
                 result["frame_paths"] = frame_paths
 
@@ -771,19 +843,11 @@ class DocumentProcessor:
 
             if transcript:
                 content_parts.append(transcript)
-                # Chunk transcript into ~500-char segments for embedding
-                words = transcript.split()
-                chunk_words: List[str] = []
-                for word in words:
-                    chunk_words.append(word)
-                    if len(" ".join(chunk_words)) >= 500:
-                        chunk_text = " ".join(chunk_words)
-                        chunks.append({"content": chunk_text, "type": "transcript"})
-                        chunk_words = []
-                if chunk_words:
-                    chunk_text = " ".join(chunk_words)
-                    if chunk_text.strip():
-                        chunks.append({"content": chunk_text, "type": "transcript"})
+                # Chunk transcript into labeled logical segments for embedding + traceability
+                chunks.extend(self._build_labeled_transcript_chunks(transcript, target_chars=500))
+
+            if is_video and frame_paths:
+                chunks.extend(self._build_labeled_frame_chunks(frame_paths, fps=frame_fps))
 
             if not content_parts:
                 # No transcript available — placeholder
