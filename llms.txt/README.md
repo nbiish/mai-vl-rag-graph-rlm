@@ -71,8 +71,8 @@ Audio transcription now routes through the full omni chain — no more silent fa
 - **Progress bars** — tqdm integration for embedding/search operations
 
 ### 🎯 Smart Defaults (New!)
-- **Configuration profiles** — `--profile {fast,comprehensive}` presets (only 2 choices)
-- **Comprehensive by default** — All best features enabled automatically (multi-query, graph-augmented, deep reasoning)
+- **MCP mode surface** — `balanced` (default) and `comprehensive` (deep analysis)
+- **Canonical benchmark orchestrator** — `tests/full_matrix_benchmark.py` for pre-final and final confirmation gates
 - **Simplified MCP server** — 3 consolidated tools for reduced context usage: `analyze`, `query_collection`, `collection_manage`
 - **API hierarchy default** — Provider auto-fallback enabled by default (set keys in .env)
 
@@ -131,6 +131,7 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | System architecture — diagrams, component map, pipeline flow, collection internals, CLI reference |
 | **[RULES.md](RULES.md)** | Coding standards — always/never patterns, collection rules, device detection, provider-specific rules |
 | **[TODO.md](TODO.md)** | Roadmap — v0.2.0 plans, collection enhancements, completed items |
+| **[API_TESTING_PERF_RATE_LIMITS.md](API_TESTING_PERF_RATE_LIMITS.md)** | API-only testing strategy, Rust acceleration roadmap, and verified provider rate-limit references |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributor guide — adding providers, extending collections, testing |
 | **[CHANGELOG.md](CHANGELOG.md)** | Version history — v0.1.0 initial, v0.1.1 collections, v0.1.2 audio/video/memory |
 | **[SECURITY.md](../SECURITY.md)** | Local security orchestration — secret scanning, sanitization, OWASP compliance |
@@ -139,8 +140,21 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 
 ### For LLMs (Start Here)
 - **[QUICKREF.md](QUICKREF.md)** → Ultra-simplified 3-tool reference (`analyze`, `query_collection`, `collection_manage`)
-- **Mode selection**: Always use `comprehensive` (default). Only use `fast` when user explicitly requests speed.
+- **Mode selection**: Use `balanced` by default; switch to `comprehensive` for deeper analysis.
 - **What works**: 9/9 providers, collections, fallback keys, API embedding all verified working.
+
+### Test Orchestration (PPTX + Video)
+- **Pre-final gate**: `python tests/full_matrix_benchmark.py --phase pre_final`
+  - Modes: `balanced`, `comprehensive`, `expanded_comprehensive`
+- **Final confirmation gate**: `python tests/full_matrix_benchmark.py --phase final_confirmation`
+  - Modes: `balanced`, `comprehensive`
+- Legacy wrappers: `tests/benchmark_modes.py` and `tests/timing_test.py` delegate to the canonical orchestrator.
+
+### API-only Performance & Limits Planning
+- **[API_TESTING_PERF_RATE_LIMITS.md](API_TESTING_PERF_RATE_LIMITS.md)**
+  - API-only CLI/MCP test gates
+  - Rust migration/integration priorities for orchestration speed
+  - Verified provider/model rate-limit references and bottleneck notes
 
 ### For Users
 - **Getting started:** [PRD.md](PRD.md) → system overview, CLI examples, provider list
@@ -202,7 +216,7 @@ All modes persist embeddings and knowledge graphs automatically:
 3. **Provider fallback** — all retries fail → try next provider in hierarchy
 4. **z.ai five-tier** — Coding Plan endpoint → Normal endpoint → fallback key → model fallback → hierarchy
 
-Default hierarchy: `modalresearch → sambanova → nebius → groq → cerebras → zai → zenmux → openrouter → ...`
+Default hierarchy: `sambanova → modalresearch → nebius → ollama → groq → cerebras → zai → zenmux → openrouter → ...`
 
 ## Future Plans
 

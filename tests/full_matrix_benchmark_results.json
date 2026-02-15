@@ -1,0 +1,68 @@
+[
+  {
+    "content_type": "pptx",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Overview of International Business.pptx",
+    "mode": "balanced",
+    "duration_seconds": 180.0557370185852,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 180s"
+  },
+  {
+    "content_type": "pptx",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Overview of International Business.pptx",
+    "mode": "comprehensive",
+    "duration_seconds": 180.0361762046814,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 180s"
+  },
+  {
+    "content_type": "pptx",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Overview of International Business.pptx",
+    "mode": "expanded_comprehensive",
+    "duration_seconds": 180.04847311973572,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 180s"
+  },
+  {
+    "content_type": "video",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Real-Time, Low Latency and High Temporal Resolution Spectrograms - Alexandre R.J. Francois - ADC.mp4",
+    "mode": "balanced",
+    "duration_seconds": 300.05284810066223,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 300s"
+  },
+  {
+    "content_type": "video",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Real-Time, Low Latency and High Temporal Resolution Spectrograms - Alexandre R.J. Francois - ADC.mp4",
+    "mode": "comprehensive",
+    "duration_seconds": 300.05505418777466,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 300s"
+  },
+  {
+    "content_type": "video",
+    "input_path": "/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm/examples/Real-Time, Low Latency and High Temporal Resolution Spectrograms - Alexandre R.J. Francois - ADC.mp4",
+    "mode": "expanded_comprehensive",
+    "duration_seconds": 300.03272891044617,
+    "status": "timeout",
+    "document_count": 0,
+    "chunk_count": 0,
+    "query_count": 0,
+    "error": "Timed out after 300s"
+  }
+]

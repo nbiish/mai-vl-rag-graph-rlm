@@ -2,6 +2,103 @@
 
 > Keep tasks atomic and testable.
 
+## Summary — Feb 15, 2026 (API-Only Testing + Performance/Rust + Rate Limits)
+
+**Session Focus**: Restrict validation scope to API paths for CLI/MCP, review benchmark failures from terminal outputs, and produce an actionable performance plan including Rust integration and provider rate-limit verification.
+
+### Findings from current benchmark output review
+
+1. **Current pre-final benchmark status is blocked by timeouts**
+   - PPTX: `balanced`, `comprehensive`, `expanded_comprehensive` all timed out at 180s.
+   - Video: all tested modes timed out at 300s.
+
+2. **Observed bottlenecks and failure signatures**
+   - OpenRouter primary model fallback churn (`z-ai/glm-5` -> `deepseek/deepseek-v3.2`).
+   - ZenMux media path issues before timeout:
+     - `RESOURCE_EXHAUSTED` with request-size ceiling shown in error body.
+     - fallback model `404 invalid_model` for configured fallback route.
+
+### Completed documentation work
+
+1. Added:
+   - `llms.txt/API_TESTING_PERF_RATE_LIMITS.md`
+     - API-only test gates for CLI + MCP
+     - staged faster execution strategy
+     - Rust migration/integration priorities
+     - provider/model rate-limit references and caveats
+
+2. Updated:
+   - `llms.txt/README.md`
+     - linked the new API-only performance/rate-limit reference doc in navigation
+     - added quick-navigation section for API-only testing/performance planning
+
+### Rate-limit verification status
+
+Verified documentation references were captured for:
+- OpenRouter
+- DeepSeek
+- Groq
+- Cerebras
+- Anthropic
+- OpenAI
+- SambaNova
+- Nebius Token Factory
+- Modal GLM-5 (qualitative limit guidance)
+
+Remaining gap:
+- **ZenMux** public docs in this pass did not provide a clean numeric limit table for our exact models; we documented runtime evidence and flagged account-console validation as required.
+
+### Next implementation actions (planned)
+
+1. Add API preflight checks before heavy ingestion/transcription.
+2. Add benchmark error taxonomy fields (auth/model_missing/rate_limited/payload_too_large/provider_unavailable/timeout).
+3. Separate media-transcription timeout from end-to-end query timeout.
+4. Add provider-specific API smoke tests for CLI and MCP.
+5. Start Rust sidecar for orchestration/timeouts/metrics hot path.
+
+## Summary — Feb 15, 2026 (Pre-Final Test Orchestration Consolidation)
+
+**Session Focus**: Consolidate testing around PowerPoint + video assets, align LLM-facing docs with MCP mode simplification, and prepare final confirmation gate.
+
+### Completed Work
+
+1. **Canonical benchmark orchestrator established**
+   - `tests/full_matrix_benchmark.py` is now the source of truth for orchestrated timing and status runs.
+   - Added phase-gated execution:
+     - `--phase pre_final` -> `balanced`, `comprehensive`, `expanded_comprehensive`
+     - `--phase final_confirmation` -> `balanced`, `comprehensive`
+   - Removed legacy `fast` and `thorough` profile execution from the canonical matrix.
+
+2. **Legacy benchmark scripts consolidated (non-breaking wrappers)**
+   - `tests/benchmark_modes.py` delegates to: `full_matrix_benchmark.py --phase pre_final`
+   - `tests/timing_test.py` delegates to: `full_matrix_benchmark.py --phase final_confirmation`
+   - This preserves old entrypoints while enforcing one orchestration path.
+
+3. **Examples/tests folder orchestration docs added**
+   - `tests/README.md` added with phase workflow, commands, assets, outputs.
+   - `examples/TEST_ASSETS.md` added to formalize canonical PPTX + video validation assets.
+
+4. **LLM-facing docs aligned with MCP two-mode surface**
+   - `llms.txt/QUICKREF.md` updated to only present:
+     - `balanced` (default)
+     - `comprehensive` (deep analysis)
+   - Added canonical pre-final/final test commands to QUICKREF.
+   - `llms.txt/README.md` updated for:
+     - MCP mode surface (`balanced` / `comprehensive`)
+     - canonical benchmark orchestrator usage
+     - updated hierarchy ordering snapshot
+
+### Next Steps Before Final Confirmation
+
+1. Run pre-final gate on canonical assets:
+   - `python tests/full_matrix_benchmark.py --phase pre_final`
+2. Review `tests/full_matrix_benchmark_results.md` for:
+   - timeouts/failures
+   - expanded/comprehensive overhead
+3. If pre-final is stable, run final confirmation gate:
+   - `python tests/full_matrix_benchmark.py --phase final_confirmation`
+4. Freeze final report + readiness sign-off.
+
 ## Summary — Feb 12, 2026 Late Session (MCP Simplification & Documentation)
 
 **Session Focus**: Simplified MCP tools, removed provider/model parameters, updated documentation

@@ -1,6 +1,6 @@
 # Quick Reference — VL-RAG-Graph-RLM MCP Tools
 
-> **For LLMs**: Ultra-simplified tool reference. Default = comprehensive. Use `mode="fast"` only when speed matters.
+> **For LLMs**: Ultra-simplified tool reference. Default = `balanced`. Use `mode="comprehensive"` for deeper analysis.
 
 ---
 
@@ -15,7 +15,7 @@
 {
   "input_path": "./my-document.pdf",  // Required: file or folder
   "query": "Summarize the key findings",  // Optional: your question
-  "mode": "comprehensive",  // Optional: "comprehensive" (default) or "fast"
+  "mode": "balanced",  // Optional: "balanced" (default) or "comprehensive"
   "output_path": null  // Optional: save report to file
 }
 ```
@@ -24,11 +24,11 @@
 
 **Examples**:
 ```json
-// Full analysis (default - always use this unless user says "fast")
+// Default balanced analysis
 {"input_path": "./research-papers", "query": "What are the main conclusions?"}
 
-// Fast search only when explicitly requested
-{"input_path": "./notes.md", "query": "Quick summary", "mode": "fast"}
+// Deep analysis when requested
+{"input_path": "./notes.md", "query": "Give a detailed synthesis", "mode": "comprehensive"}
 ```
 
 ---
@@ -42,7 +42,7 @@
 {
   "collection": "research",  // Required: collection name
   "query": "What did the papers say about X?",  // Required: your question
-  "mode": "comprehensive"  // Optional: "comprehensive" (default) or "fast"
+  "mode": "balanced"  // Optional: "balanced" (default) or "comprehensive"
 }
 ```
 
@@ -102,14 +102,32 @@
 
 ---
 
-## Mode Selection (Always Comprehensive by Default)
+## Mode Selection
 
 | Mode | Use When | Features |
 |------|----------|----------|
-| `comprehensive` | **ALWAYS DEFAULT** — use this unless user explicitly says "fast" | Full VL-RAG-Graph-RLM: vision, audio, RAG, reranking, knowledge graph, recursive LLM |
-| `fast` | Only when user explicitly requests speed over depth | Quick keyword + dense search, minimal processing |
+| `balanced` | **Default** for normal use | Strong quality/speed tradeoff, multi-query + graph augmentation |
+| `comprehensive` | When user asks for depth/exhaustiveness | Deeper recursion/iterations for maximum analysis quality |
 
-**Rule**: If user doesn't specify mode, use `comprehensive`. Only use `fast` when user says things like "quick summary", "fast answer", "just search", "don't analyze deeply".
+**Rule**: If user doesn't specify mode, use `balanced`. Use `comprehensive` for deep, high-stakes, or exhaustive analysis.
+
+---
+
+## Canonical Test Orchestration (PPTX + Video)
+
+Use a single orchestrator for pre-final and final gates:
+
+```bash
+# Pre-final: balanced + comprehensive + expanded_comprehensive
+python tests/full_matrix_benchmark.py --phase pre_final
+
+# Final confirmation: balanced + comprehensive only
+python tests/full_matrix_benchmark.py --phase final_confirmation
+```
+
+Legacy wrappers delegate to the same orchestrator:
+- `tests/benchmark_modes.py` -> `--phase pre_final`
+- `tests/timing_test.py` -> `--phase final_confirmation`
 
 ---
 
@@ -150,11 +168,11 @@
 ## Quick Commands
 
 ```bash
-# Analyze document (comprehensive default)
+# Analyze document (balanced default)
 vrlmrag ./document.pdf -q "Summarize"
 
-# Fast search only
-vrlmrag ./notes.md -q "Quick lookup" --profile fast
+# Deep analysis
+vrlmrag ./notes.md -q "Deep analysis" --profile comprehensive
 
 # Create and populate collection
 vrlmrag -c research --add ./papers/

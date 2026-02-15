@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Full matrix benchmark for standard + expanded comprehensive profiles.
+"""Full matrix benchmark for consolidated MCP-aligned profiles.
 
 Runs timed validation across:
 - Content: PowerPoint + Video
-- Modes: fast, balanced, thorough, comprehensive, expanded_comprehensive
+- Modes: balanced, comprehensive, expanded_comprehensive
 
 Each test runs in an isolated process with timeout to avoid hangs.
 """
@@ -11,6 +11,7 @@ Each test runs in an isolated process with timeout to avoid hangs.
 from __future__ import annotations
 
 import json
+import argparse
 import multiprocessing as mp
 import sys
 import time
@@ -28,6 +29,8 @@ class CaseResult:
     mode: str
     duration_seconds: float
     status: str  # success | error | timeout
+    stage: str = "analysis"  # preflight | analysis
+    failure_category: Optional[str] = None
     document_count: int = 0
     chunk_count: int = 0
     query_count: int = 0
@@ -35,30 +38,12 @@ class CaseResult:
 
 
 PROFILES: Dict[str, Dict[str, Any]] = {
-    "fast": {
-        "max_depth": 2,
-        "max_iterations": 4,
-        "multi_query": False,
-        "graph_augmented": False,
-        "graph_hops": 0,
-        "use_api": True,
-        "text_only": False,
-    },
     "balanced": {
         "max_depth": 3,
         "max_iterations": 8,
         "multi_query": True,
         "graph_augmented": True,
         "graph_hops": 2,
-        "use_api": True,
-        "text_only": False,
-    },
-    "thorough": {
-        "max_depth": 4,
-        "max_iterations": 12,
-        "multi_query": True,
-        "graph_augmented": True,
-        "graph_hops": 3,
         "use_api": True,
         "text_only": False,
     },
@@ -83,12 +68,125 @@ PROFILES: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _categorize_failure(message: Optional[str]) -> Optional[str]:
+    if not message:
+        return None
+
+    lower = message.lower()
+    if "timed out" in lower:
+        return "timeout"
+    if any(token in lower for token in ["401", "unauthorized", "forbidden", "api key not set", "not set"]):
+        return "auth"
+    if any(token in lower for token in ["404", "invalid_model", "model not found", "no endpoints for this model"]):
+        return "model_missing"
+    if any(token in lower for token in ["429", "rate limit", "retry-after", "too many requests"]):
+        return "rate_limited"
+    if any(token in lower for token in ["resource_exhausted", "message larger than max", "payload", "too large"]):
+        return "payload_too_large"
+    if any(token in lower for token in ["connection error", "service unavailable", "provider", "5xx", "500"]):
+        return "provider_unavailable"
+    return "unknown"
+
+
+def _api_preflight_worker(queue: mp.Queue, provider: str, include_omni: bool) -> None:
+    """Worker process: verify provider credentials/model availability quickly."""
+    from vl_rag_graph_rlm.rag.api_embedding import create_api_embedder
+
+    start = time.time()
+    try:
+        embedder = create_api_embedder()
+
+        # Fast embedding probe (primary API path)
+        embed_resp = embedder._emb_client.embeddings.create(
+            model=embedder._emb_model,
+            input="healthcheck",
+        )
+        emb_dim = len(embed_resp.data[0].embedding)
+
+        if include_omni:
+            if embedder._omni_client is None:
+                raise RuntimeError("ZENMUX_API_KEY not configured for media preflight")
+
+            embedder._omni_client.chat.completions.create(
+                model=embedder._omni_model,
+                messages=[{"role": "user", "content": "Reply with OK only."}],
+                max_tokens=4,
+                temperature=0,
+            )
+
+        queue.put(
+            {
+                "status": "success",
+                "duration_seconds": time.time() - start,
+                "error": None,
+                "details": f"provider={provider}; emb_dim={emb_dim}; include_omni={include_omni}",
+            }
+        )
+    except Exception as exc:  # pragma: no cover
+        queue.put(
+            {
+                "status": "error",
+                "duration_seconds": time.time() - start,
+                "error": str(exc),
+                "details": None,
+            }
+        )
+
+
+def run_api_preflight(content_type: str, provider: str, timeout_seconds: int) -> dict[str, Any]:
+    """Run fast API preflight check for current content type.
+
+    - Always checks embeddings endpoint.
+    - For video, also checks omni model availability.
+    """
+    include_omni = content_type == "video"
+    queue: mp.Queue = mp.Queue()
+    proc = mp.Process(
+        target=_api_preflight_worker,
+        args=(queue, provider, include_omni),
+        daemon=True,
+    )
+
+    start = time.time()
+    proc.start()
+    proc.join(timeout_seconds)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        return {
+            "status": "timeout",
+            "duration_seconds": time.time() - start,
+            "error": f"Preflight timed out after {timeout_seconds}s",
+            "details": None,
+        }
+
+    if queue.empty():
+        return {
+            "status": "error",
+            "duration_seconds": time.time() - start,
+            "error": "Preflight worker exited without result",
+            "details": None,
+        }
+
+    return queue.get()
+
+
+PHASE_MODES: Dict[str, list[str]] = {
+    # Pre-final gate: validated MCP-exposed modes + expansion stress profile
+    "pre_final": ["balanced", "comprehensive", "expanded_comprehensive"],
+    # Final confirmation: consolidated user-facing modes only
+    "final_confirmation": ["balanced", "comprehensive"],
+}
+
+
 def _run_case_worker(
     queue: mp.Queue,
     input_path: str,
     content_type: str,
     mode: str,
     profile: Dict[str, Any],
+    provider: str,
 ) -> None:
     """Worker process: run a single benchmark case and push result payload to queue."""
     from vrlmrag import run_analysis
@@ -96,7 +194,7 @@ def _run_case_worker(
     start = time.time()
     try:
         result = run_analysis(
-            provider="openrouter",
+            provider=provider,
             input_path=input_path,
             query="What are the main topics and key concepts presented?",
             max_depth=profile["max_depth"],
@@ -117,6 +215,8 @@ def _run_case_worker(
                 "document_count": result.get("document_count", 0),
                 "chunk_count": result.get("total_chunks", 0),
                 "query_count": len(result.get("queries", [])),
+                "stage": "analysis",
+                "failure_category": None,
                 "error": None,
             }
         )
@@ -129,17 +229,25 @@ def _run_case_worker(
                 "document_count": 0,
                 "chunk_count": 0,
                 "query_count": 0,
+                "stage": "analysis",
+                "failure_category": _categorize_failure(str(exc)),
                 "error": str(exc),
             }
         )
 
 
-def run_case(input_path: str, content_type: str, mode: str, timeout_seconds: int) -> CaseResult:
+def run_case(
+    input_path: str,
+    content_type: str,
+    mode: str,
+    timeout_seconds: int,
+    provider: str,
+) -> CaseResult:
     profile = PROFILES[mode]
     queue: mp.Queue = mp.Queue()
     proc = mp.Process(
         target=_run_case_worker,
-        args=(queue, input_path, content_type, mode, profile),
+        args=(queue, input_path, content_type, mode, profile, provider),
         daemon=True,
     )
 
@@ -156,6 +264,8 @@ def run_case(input_path: str, content_type: str, mode: str, timeout_seconds: int
             mode=mode,
             duration_seconds=time.time() - start,
             status="timeout",
+            stage="analysis",
+            failure_category="timeout",
             error=f"Timed out after {timeout_seconds}s",
         )
 
@@ -166,6 +276,8 @@ def run_case(input_path: str, content_type: str, mode: str, timeout_seconds: int
             mode=mode,
             duration_seconds=time.time() - start,
             status="error",
+            stage="analysis",
+            failure_category="unknown",
             error="Worker exited without result",
         )
 
@@ -176,6 +288,8 @@ def run_case(input_path: str, content_type: str, mode: str, timeout_seconds: int
         mode=mode,
         duration_seconds=payload["duration_seconds"],
         status=payload["status"],
+        stage=payload.get("stage", "analysis"),
+        failure_category=payload.get("failure_category"),
         document_count=payload["document_count"],
         chunk_count=payload["chunk_count"],
         query_count=payload["query_count"],
@@ -184,6 +298,49 @@ def run_case(input_path: str, content_type: str, mode: str, timeout_seconds: int
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run consolidated PPTX/video benchmark matrix.")
+    parser.add_argument(
+        "--phase",
+        choices=sorted(PHASE_MODES.keys()),
+        default="pre_final",
+        help="pre_final (includes expanded stress profile) or final_confirmation",
+    )
+    parser.add_argument(
+        "--provider",
+        default="openrouter",
+        help="Provider used for benchmark analysis and preflight (default: openrouter)",
+    )
+    parser.add_argument(
+        "--pptx-timeout",
+        type=int,
+        default=180,
+        help="Per-case analysis timeout for PPTX inputs (seconds)",
+    )
+    parser.add_argument(
+        "--video-timeout",
+        type=int,
+        default=300,
+        help="Per-case analysis timeout for video inputs (seconds)",
+    )
+    parser.add_argument(
+        "--api-preflight-timeout",
+        type=int,
+        default=20,
+        help="Preflight timeout for text/document paths (seconds)",
+    )
+    parser.add_argument(
+        "--media-preflight-timeout",
+        type=int,
+        default=45,
+        help="Preflight timeout for media paths (seconds)",
+    )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip API preflight checks (not recommended for production gate runs)",
+    )
+    args = parser.parse_args()
+
     repo_root = Path("/Volumes/1tb-sandisk/code-external/mai-vl-rag-graph-rlm")
     examples = repo_root / "examples"
 
@@ -197,15 +354,17 @@ def main() -> None:
         pptx_path = repo_root / "README.md"
 
     test_matrix = [
-        ("pptx", str(pptx_path), 180),
-        ("video", str(video_path), 300),
+        ("pptx", str(pptx_path), args.pptx_timeout),
+        ("video", str(video_path), args.video_timeout),
     ]
 
-    modes = ["fast", "balanced", "thorough", "comprehensive", "expanded_comprehensive"]
+    modes = PHASE_MODES[args.phase]
     all_results: list[CaseResult] = []
 
     print("=" * 88)
     print("FULL MATRIX BENCHMARK")
+    print(f"Phase: {args.phase}")
+    print(f"Provider: {args.provider}")
     print("=" * 88)
 
     for content_type, input_path, timeout_s in test_matrix:
@@ -213,12 +372,54 @@ def main() -> None:
             print(f"[skip] {content_type}: {input_path} not found")
             continue
 
+        if not args.skip_preflight:
+            preflight_timeout = args.media_preflight_timeout if content_type == "video" else args.api_preflight_timeout
+            print(
+                f"\n[{content_type}] preflight provider={args.provider} "
+                f"(timeout {preflight_timeout}s)",
+                end="",
+                flush=True,
+            )
+            preflight = run_api_preflight(
+                content_type=content_type,
+                provider=args.provider,
+                timeout_seconds=preflight_timeout,
+            )
+            print(f"  [{preflight['status']}] {preflight['duration_seconds']:.1f}s")
+
+            if preflight["status"] != "success":
+                fail_category = _categorize_failure(preflight.get("error"))
+                for mode in modes:
+                    all_results.append(
+                        CaseResult(
+                            content_type=content_type,
+                            input_path=input_path,
+                            mode=mode,
+                            duration_seconds=preflight["duration_seconds"],
+                            status="error",
+                            stage="preflight",
+                            failure_category=fail_category,
+                            error=preflight.get("error"),
+                        )
+                    )
+                print(f"  [gate] skipping analysis for {content_type} due to preflight failure")
+                continue
+
         print(f"\n[{content_type}] {input_path}")
         for mode in modes:
             print(f"  -> {mode:24s} (timeout {timeout_s}s)", end="", flush=True)
-            result = run_case(input_path, content_type, mode, timeout_s)
+            result = run_case(
+                input_path=input_path,
+                content_type=content_type,
+                mode=mode,
+                timeout_seconds=timeout_s,
+                provider=args.provider,
+            )
             all_results.append(result)
-            print(f"  [{result.status}] {result.duration_seconds:.1f}s")
+            print(
+                f"  [{result.status}] {result.duration_seconds:.1f}s"
+                f" [{result.stage}/{result.failure_category or 'n/a'}]"
+            )
 
     out_json = repo_root / "tests" / "full_matrix_benchmark_results.json"
     out_md = repo_root / "tests" / "full_matrix_benchmark_results.md"
@@ -228,12 +429,15 @@ def main() -> None:
     lines = [
         "# Full Matrix Benchmark Results",
         "",
-        "| Content | Mode | Status | Time (s) | Docs | Chunks | Queries | Error |",
-        "|---|---|---:|---:|---:|---:|---:|---|",
+        f"**Phase:** {args.phase}",
+        f"**Provider:** {args.provider}",
+        "",
+        "| Content | Mode | Status | Stage | Category | Time (s) | Docs | Chunks | Queries | Error |",
+        "|---|---|---:|---|---|---:|---:|---:|---:|---|",
     ]
     for r in all_results:
         lines.append(
-            f"| {r.content_type} | {r.mode} | {r.status} | {r.duration_seconds:.1f} | "
+            f"| {r.content_type} | {r.mode} | {r.status} | {r.stage} | {r.failure_category or ''} | {r.duration_seconds:.1f} | "
             f"{r.document_count} | {r.chunk_count} | {r.query_count} | {r.error or ''} |"
         )
 
