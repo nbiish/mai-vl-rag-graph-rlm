@@ -1,0 +1,22 @@
+[
+  {
+    "content_type": "pptx",
+    "mode": "fast",
+    "duration_seconds": 117.37540292739868,
+    "success": true,
+    "document_count": 1,
+    "chunk_count": 124,
+    "query_count": 1,
+    "error": null
+  },
+  {
+    "content_type": "pptx",
+    "mode": "comprehensive",
+    "duration_seconds": 84.51004910469055,
+    "success": true,
+    "document_count": 1,
+    "chunk_count": 124,
+    "query_count": 1,
+    "error": null
+  }
+]

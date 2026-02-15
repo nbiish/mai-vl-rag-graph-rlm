@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -317,7 +318,10 @@ class VLRAGGraphRLM:
             {"role": "user", "content": query or "Analyze the context and provide insights."}
         ]
 
-        # Main loop
+        # Main loop with early stopping detection
+        previous_response_quality = 0.0
+        quality_plateau_count = 0
+        
         for iteration in range(self.max_iterations):
             self._iterations = iteration + 1
 
@@ -339,6 +343,32 @@ class VLRAGGraphRLM:
 
             # Execute code
             code_blocks = self._execute_code_blocks(response, env)
+
+            # Early stopping: Check if response quality has plateaued
+            # Quality metrics: response length, code presence, structural completeness
+            current_quality = self._assess_response_quality(response, code_blocks)
+            
+            if iteration > 2:  # Only after a few iterations
+                quality_diff = abs(current_quality - previous_response_quality)
+                if quality_diff < 0.1:  # Quality hasn't changed much
+                    quality_plateau_count += 1
+                    if quality_plateau_count >= 2 and current_quality > 0.7:
+                        # Quality plateaued at high level - stop early
+                        exec_time = time.time() - start_time
+                        # Generate final answer from current state
+                        final_response = await self._generate_final_answer(messages)
+                        return RLMChatCompletion(
+                            provider=self.provider,
+                            model=self.model,
+                            prompt=query,
+                            response=final_response,
+                            usage_summary=self.client.get_usage_summary(),
+                            execution_time=exec_time,
+                        )
+                else:
+                    quality_plateau_count = 0
+            
+            previous_response_quality = current_quality
 
             # Format iteration for history
             iteration_data = RLMIteration(
@@ -414,6 +444,64 @@ class VLRAGGraphRLM:
             "content": "Maximum iterations reached. Please provide your best final answer based on the analysis above."
         }]
         return await self.client.acompletion(fallback_messages)
+
+    async def _generate_final_answer(self, messages: list[dict[str, str]]) -> str:
+        """Generate final answer from current conversation state."""
+        final_messages = messages + [{
+            "role": "user",
+            "content": "Based on the analysis above, provide a comprehensive final answer. Synthesize all the information into a clear response."
+        }]
+        return await self.client.acompletion(final_messages)
+
+    def _assess_response_quality(
+        self, 
+        response: str, 
+        code_blocks: list[tuple[str, REPLResult]]
+    ) -> float:
+        """Assess the quality of a response for early stopping.
+        
+        Returns a score between 0.0 and 1.0 based on:
+        - Response length (adequate but not excessive)
+        - Presence of structured content (lists, headers)
+        - Code execution results
+        - Comprehensiveness indicators
+        """
+        score = 0.0
+        
+        # Length factor (optimal around 500-2000 chars)
+        length = len(response)
+        if 300 <= length <= 3000:
+            score += 0.3
+        elif length > 100:
+            score += 0.15
+        
+        # Structure factor (headers, lists, sections)
+        structure_indicators = [
+            r'^#+\s',  # Markdown headers
+            r'^\s*[-*]\s',  # Lists
+            r'^\s*\d+\.\s',  # Numbered lists
+            r'\*\*.*?\*\*',  # Bold text (emphasis)
+        ]
+        for pattern in structure_indicators:
+            if re.search(pattern, response, re.MULTILINE):
+                score += 0.05
+        
+        # Code execution factor (if code was executed)
+        if code_blocks:
+            successful_executions = sum(
+                1 for _, result in code_blocks 
+                if result.stderr == ""
+            )
+            score += 0.2 * (successful_executions / len(code_blocks))
+        
+        # Content richness (diverse sentence structures)
+        sentence_count = len(re.findall(r'[.!?]+', response))
+        if sentence_count >= 3:
+            score += 0.1
+        if sentence_count >= 6:
+            score += 0.1
+        
+        return min(score, 1.0)
 
     def _build_repl_env(self, query: str, context: str) -> dict[str, Any]:
         """Build REPL environment."""

@@ -1,7 +1,8 @@
-"""Provider hierarchy client with automatic fallback."""
+"""Provider hierarchy client with automatic fallback and circuit breaker."""
 
 import logging
 import os
+import time
 from typing import Any
 
 from vl_rag_graph_rlm.clients.base import BaseLM
@@ -9,6 +10,9 @@ from vl_rag_graph_rlm.types import ModelUsageSummary, UsageSummary
 
 logger = logging.getLogger(__name__)
 
+# Circuit breaker configuration
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3  # Disable after 3 consecutive failures
+CIRCUIT_BREAKER_COOLDOWN_SECONDS = 300  # 5 minute cooldown before retry
 # Default provider hierarchy order.
 # Editable via PROVIDER_HIERARCHY env var (comma-separated).
 # If openai_compatible or anthropic_compatible have API keys configured,
@@ -197,6 +201,10 @@ class HierarchyClient(BaseLM):
         self._active_provider: str | None = None
         self._active_client: BaseLM | None = None
         self._failed_providers: set[str] = set()
+        
+        # Circuit breaker state
+        self._consecutive_failures: dict[str, int] = {}
+        self._circuit_broken_until: dict[str, float] = {}
 
         # Initialize with first provider
         self._activate_next()
@@ -205,7 +213,23 @@ class HierarchyClient(BaseLM):
 
     def _activate_next(self) -> None:
         """Activate the next available provider in the hierarchy."""
+        now = time.time()
         for provider in self._hierarchy:
+            # Check if provider is circuit-broken (cooldown period)
+            if provider in self._circuit_broken_until:
+                if now < self._circuit_broken_until[provider]:
+                    remaining = int(self._circuit_broken_until[provider] - now)
+                    logger.debug(
+                        "Circuit breaker: '%s' disabled for %d more seconds",
+                        provider, remaining
+                    )
+                    continue
+                else:
+                    # Cooldown expired, reset circuit
+                    logger.info("Circuit breaker: '%s' cooldown expired, re-enabling", provider)
+                    del self._circuit_broken_until[provider]
+                    self._consecutive_failures[provider] = 0
+            
             if provider in self._failed_providers:
                 continue
 
@@ -260,16 +284,35 @@ class HierarchyClient(BaseLM):
             try:
                 method = getattr(self._active_client, method_name)
                 result = method(*args, **kwargs)
+                # Success: reset consecutive failures for this provider
+                if self._active_provider in self._consecutive_failures:
+                    self._consecutive_failures[self._active_provider] = 0
                 return result
             except Exception as e:
                 last_error = e
                 failed = self._active_provider
+                
+                # Track consecutive failures
+                self._consecutive_failures[failed] = self._consecutive_failures.get(failed, 0) + 1
+                failure_count = self._consecutive_failures[failed]
+                
+                # Check if circuit breaker should open
+                if failure_count >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+                    cooldown_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
+                    self._circuit_broken_until[failed] = cooldown_until
+                    logger.warning(
+                        "Circuit breaker: '%s' disabled for %d seconds after %d consecutive failures",
+                        failed, CIRCUIT_BREAKER_COOLDOWN_SECONDS, failure_count
+                    )
+                
                 self._failed_providers.add(failed)
                 logger.warning(
-                    "Hierarchy: provider '%s' failed (%s: %s), trying next...",
+                    "Hierarchy: provider '%s' failed (%s: %s, consecutive: %d/%d), trying next...",
                     failed,
                     type(e).__name__,
                     str(e)[:120],
+                    failure_count,
+                    CIRCUIT_BREAKER_FAILURE_THRESHOLD,
                 )
 
                 # Try to activate next provider

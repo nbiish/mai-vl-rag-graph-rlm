@@ -267,6 +267,57 @@ class APIEmbeddingProvider:
         """Generate embedding for text input."""
         return self._embed_texts([text])[0]
 
+    def batch_embed_images(
+        self,
+        image_paths: List[str],
+        batch_size: int = 4,
+        instruction: Optional[str] = None,
+    ) -> List[List[float]]:
+        """Embed multiple images in batches for improved throughput.
+        
+        This method processes images in parallel batches, significantly reducing
+        total processing time for video frames or multiple images.
+        
+        Args:
+            image_paths: List of image file paths
+            batch_size: Number of images to process in parallel (default 4)
+            instruction: Optional custom instruction for image description
+            
+        Returns:
+            List of embeddings, one per input image
+        """
+        import concurrent.futures
+        from functools import partial
+        
+        if not image_paths:
+            return []
+        
+        # Process images in parallel using thread pool
+        embed_fn = partial(self.embed_image, instruction=instruction)
+        
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # Submit all tasks
+            future_to_idx = {
+                executor.submit(embed_fn, path): idx 
+                for idx, path in enumerate(image_paths)
+            }
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    embedding = future.result()
+                    results.append((idx, embedding))
+                except Exception as e:
+                    logger.warning(f"Failed to embed image {image_paths[idx]}: {e}")
+                    # Return zero vector as fallback
+                    results.append((idx, [0.0] * self.embedding_dim))
+        
+        # Sort by original index and return
+        results.sort(key=lambda x: x[0])
+        return [emb for _, emb in results]
+
     def embed_image(
         self,
         image: Union[str, Any],

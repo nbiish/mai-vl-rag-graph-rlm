@@ -142,37 +142,43 @@ async def analyze(
     ctx: Context,
     input_path: str,
     query: Optional[str] = None,
-    mode: str = "comprehensive",
+    mode: str = "balanced",
     output_path: Optional[str] = None,
 ) -> str:
-    """Analyze documents. Default is comprehensive — use mode='fast' only if user requests speed.
+    """Analyze documents. Default is balanced — use mode='comprehensive' for deep analysis.
     
     Args:
         input_path: Path to file or folder
         query: Question to answer (auto-generated if not provided)
-        mode: comprehensive (default) or fast
+        mode: balanced (default) or comprehensive
         output_path: Optional path to save report
     """
     settings = _get_settings(ctx)
     eff_provider, eff_model = _effective_provider_model(settings)
-    
-    # Map modes to profile settings
+
+    canonical_mode = mode.strip().lower()
+    if canonical_mode not in {"balanced", "comprehensive"}:
+        return f"Error: Unknown mode '{mode}'. Use: balanced or comprehensive"
+
     profile_settings = {
-        "fast": {"max_depth": 2, "max_iterations": 5, "multi_query": False, 
-                "graph_augmented": False, "text_only": True},
-        "balanced": {"max_depth": 3, "max_iterations": 10, "multi_query": False,
-                    "graph_augmented": False, "text_only": False},
-        "thorough": {"max_depth": 4, "max_iterations": 12, "multi_query": True,
-                     "graph_augmented": True, "graph_hops": 3, "text_only": False},
-        "comprehensive": {"max_depth": 5, "max_iterations": 15, "multi_query": True,
-                         "graph_augmented": True, "graph_hops": 3, "verbose": True,
-                         "text_only": False},
+        "balanced": {
+            "max_depth": 3,
+            "max_iterations": 8,
+            "multi_query": True,
+            "graph_augmented": True,
+            "graph_hops": 2,
+        },
+        "comprehensive": {
+            "max_depth": 5,
+            "max_iterations": 15,
+            "multi_query": True,
+            "graph_augmented": True,
+            "graph_hops": 2,
+            "verbose": True,
+        },
     }
-    
-    if mode not in profile_settings:
-        return f"Error: Unknown mode '{mode}'. Use: fast, balanced, thorough, comprehensive"
-    
-    profile = profile_settings[mode]
+
+    profile = profile_settings[canonical_mode]
     
     from vrlmrag import run_analysis
     
@@ -185,8 +191,8 @@ async def analyze(
             model=eff_model,
             max_depth=profile["max_depth"],
             max_iterations=profile["max_iterations"],
-            use_api=not profile.get("text_only", False),
-            text_only=profile.get("text_only", False),
+            use_api=settings.use_api,
+            text_only=False,  # Support all content types: images, video, audio, documents
             multi_query=profile.get("multi_query", False),
             use_graph_augmented=profile.get("graph_augmented", False),
             graph_hops=profile.get("graph_hops", 2),
@@ -197,7 +203,7 @@ async def analyze(
         
         # Format concise but informative response
         lines = [
-            f"# Analysis Complete [{mode} mode]",
+            f"# Analysis Complete [{canonical_mode} mode]",
             f"",
             f"**Provider:** {results.get('provider', 'N/A')} | "
             f"**Model:** {results.get('model', 'N/A')} | "
@@ -224,14 +230,14 @@ async def query_collection(
     ctx: Context,
     collection: str,
     query: str,
-    mode: str = "comprehensive",
+    mode: str = "balanced",
 ) -> str:
-    """Query knowledge collections. Default is comprehensive — use mode='fast' only if user requests speed.
+    """Query knowledge collections. Default is balanced — use mode='comprehensive' for deep analysis.
 
     Args:
         collection: Collection name
         query: Question to answer
-        mode: comprehensive (default) or fast
+        mode: balanced (default) or comprehensive
     """
     settings = _get_settings(ctx)
     eff_provider, eff_model = _effective_provider_model(settings)
@@ -241,18 +247,16 @@ async def query_collection(
         create_collection(collection, description=f"Auto-created for query")
         return f"Collection '{collection}' created. Add documents with: collection_add"
     
-    # Profile settings
+    canonical_mode = mode.strip().lower()
+    if canonical_mode not in {"balanced", "comprehensive"}:
+        return f"Error: Unknown mode '{mode}'. Use: balanced or comprehensive"
+
     profile_settings = {
-        "fast": {"max_depth": 2, "max_iterations": 5, "multi_query": False, "graph_augmented": False},
-        "balanced": {"max_depth": 3, "max_iterations": 10, "multi_query": False, "graph_augmented": False},
-        "thorough": {"max_depth": 4, "max_iterations": 12, "multi_query": True, "graph_augmented": True},
+        "balanced": {"max_depth": 3, "max_iterations": 8, "multi_query": True, "graph_augmented": True},
         "comprehensive": {"max_depth": 5, "max_iterations": 15, "multi_query": True, "graph_augmented": True},
     }
-    
-    if mode not in profile_settings:
-        return f"Error: Unknown mode '{mode}'"
-    
-    profile = profile_settings[mode]
+
+    profile = profile_settings[canonical_mode]
     
     from vrlmrag import run_collection_query
     import io

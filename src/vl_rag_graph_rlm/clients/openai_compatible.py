@@ -115,9 +115,9 @@ class OpenAICompatibleClient(BaseLM):
     }
 
     # Timeout configuration (seconds)
-    DEFAULT_TIMEOUT = 120.0  # 2 minutes for normal models
-    REASONING_TIMEOUT = 300.0  # 5 minutes for reasoning models (can override via env)
-    MAX_REASONING_TIMEOUT = 600.0  # 10 minutes absolute maximum
+    DEFAULT_TIMEOUT = 30.0  # 30 seconds for production use (was 120s)
+    REASONING_TIMEOUT = 60.0  # 1 minute for reasoning models (was 300s)
+    MAX_REASONING_TIMEOUT = 120.0  # 2 minutes absolute maximum (was 600s)
 
     # Environment variable names for API keys
     API_KEY_ENV = {

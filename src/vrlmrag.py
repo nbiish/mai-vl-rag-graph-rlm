@@ -638,9 +638,16 @@ class DocumentProcessor:
 
     @staticmethod
     def _extract_frames_ffmpeg(
-        video_path: str, fps: float = 0.5, max_frames: int = 32
+        video_path: str, fps: float = 0.5, max_frames: int = 16,
+        progress_callback: Optional[callable] = None
     ) -> List[str]:
         """Extract key frames from a video using ffmpeg.
+
+        Args:
+            video_path: Path to video file
+            fps: Frames per second to extract (default 0.5 = 1 frame every 2 seconds)
+            max_frames: Maximum frames to extract (default 16 for production use)
+            progress_callback: Optional callback(frame_num, total_frames) for progress updates
 
         Returns:
             List of temporary frame image paths.
@@ -669,6 +676,12 @@ class DocumentProcessor:
             for f in os.listdir(tmp_dir)
             if f.endswith(".jpg")
         )
+        
+        # Report progress if callback provided
+        if progress_callback:
+            for i, _ in enumerate(frames, 1):
+                progress_callback(i, len(frames))
+        
         return frames
 
     def _process_media(self, file_path: Path) -> dict:
@@ -1279,30 +1292,75 @@ def run_analysis(
                 except Exception as e:
                     print(f"  Warning: Could not embed image: {e}")
 
-        # Embed video frames via omni model (ZenMux describes → embeds)
+        # Embed video frames via omni model (ZenMux describes → embeds) - BATCHED
         for doc in documents:
             frame_paths = doc.get("frame_paths", [])
             if frame_paths:
-                print(f"  Embedding {len(frame_paths)} video frames via omni model...")
-                for i, frame_path in enumerate(frame_paths):
+                print(f"  Embedding {len(frame_paths)} video frames via omni model (batch_size=4)...")
+                
+                # Use batch embedding for parallel processing
+                if hasattr(embedder, 'batch_embed_images'):
                     try:
-                        prev_count = len(store.documents)
-                        store.add_image(
-                            image_path=frame_path,
-                            description=f"Video frame {i+1} from {Path(doc['path']).name}",
-                            metadata={
-                                "type": "video_frame",
-                                "frame_index": i,
-                                "source": doc["path"],
-                            },
-                            instruction=_DOCUMENT_INSTRUCTION,
+                        embeddings = embedder.batch_embed_images(
+                            frame_paths, 
+                            batch_size=4,
+                            instruction=_DOCUMENT_INSTRUCTION
                         )
-                        if len(store.documents) > prev_count:
+                        for i, (frame_path, embedding) in enumerate(zip(frame_paths, embeddings)):
+                            store.add_embedding(
+                                embedding=embedding,
+                                content=f"Video frame {i+1} from {Path(doc['path']).name}",
+                                metadata={
+                                    "type": "video_frame",
+                                    "frame_index": i,
+                                    "source": doc["path"],
+                                },
+                            )
                             embedded_count += 1
-                        else:
-                            skipped_count += 1
+                        print(f"    Batch embedded {len(frame_paths)} frames in parallel")
                     except Exception as e:
-                        print(f"  Warning: Could not embed frame {i}: {e}")
+                        print(f"  Warning: Batch embedding failed, falling back to sequential: {e}")
+                        # Fall back to sequential
+                        for i, frame_path in enumerate(frame_paths):
+                            try:
+                                prev_count = len(store.documents)
+                                store.add_image(
+                                    image_path=frame_path,
+                                    description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                                    metadata={
+                                        "type": "video_frame",
+                                        "frame_index": i,
+                                        "source": doc["path"],
+                                    },
+                                    instruction=_DOCUMENT_INSTRUCTION,
+                                )
+                                if len(store.documents) > prev_count:
+                                    embedded_count += 1
+                                else:
+                                    skipped_count += 1
+                            except Exception as e2:
+                                print(f"  Warning: Could not embed frame {i}: {e2}")
+                else:
+                    # Fallback to sequential if batch not available
+                    for i, frame_path in enumerate(frame_paths):
+                        try:
+                            prev_count = len(store.documents)
+                            store.add_image(
+                                image_path=frame_path,
+                                description=f"Video frame {i+1} from {Path(doc['path']).name}",
+                                metadata={
+                                    "type": "video_frame",
+                                    "frame_index": i,
+                                    "source": doc["path"],
+                                },
+                                instruction=_DOCUMENT_INSTRUCTION,
+                            )
+                            if len(store.documents) > prev_count:
+                                embedded_count += 1
+                            else:
+                                skipped_count += 1
+                        except Exception as e:
+                            print(f"  Warning: Could not embed frame {i}: {e}")
 
         print(f"  New embeddings: {embedded_count} | Skipped: {skipped_count}")
         print(f"  Total in store: {len(store.documents)} documents")
@@ -1481,7 +1539,7 @@ def run_analysis(
         _print(f"  Warning: KG extraction failed: {e}")
 
     # ================================================================
-    # Step 5: Run Queries with Qwen3-VL retrieval
+    # Step 5: Run Queries with Qwen3-VL retrieval (Parallel for multi-query)
     # ================================================================
     queries_to_run: List[str] = []
     if query:
@@ -1504,9 +1562,85 @@ def run_analysis(
     rrf = ReciprocalRankFusion(k=60)
     fallback_reranker = CompositeReranker()
 
-    for q in queries_to_run:
-        _print(f"\n  Query: {q}")
-        qr = _run_vl_rag_query(
+    # Use parallel execution for multiple queries (comprehensive mode optimization)
+    if len(queries_to_run) > 1 and multi_query:
+        import asyncio
+        _print(f"[parallel] Running {len(queries_to_run)} queries concurrently...")
+        
+        async def _run_query_async(q: str) -> Dict[str, Any]:
+            """Async wrapper for query execution."""
+            return _run_vl_rag_query(
+                q,
+                store=store,
+                reranker_vl=reranker_vl,
+                rrf=rrf,
+                fallback_reranker=fallback_reranker,
+                all_chunks=all_chunks,
+                knowledge_graph=knowledge_graph,
+                context_budget=context_budget,
+                rlm=rlm,
+                fallback_hierarchy=fallback_hierarchy,
+                provider=provider,
+                resolved_model=resolved_model,
+                max_depth=max_depth,
+                max_iterations=max_iterations,
+                verbose=False,  # Reduce noise in parallel mode
+                rrf_weights=rrf_weights or [4.0, 1.0],
+                use_graph_augmented=use_graph_augmented,
+                graph_hops=graph_hops,
+            )
+        
+        # Run all queries concurrently
+        async def _run_all_queries():
+            tasks = [_run_query_async(q) for q in queries_to_run]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        
+        try:
+            results = asyncio.run(_run_all_queries())
+            for i, (q, result) in enumerate(zip(queries_to_run, results)):
+                if isinstance(result, Exception):
+                    _print(f"  Query {i+1} failed: {result}")
+                    query_results.append({
+                        "query": q,
+                        "response": f"Error: {result}",
+                        "time": 0,
+                        "sources": [],
+                    })
+                else:
+                    if not _quiet:
+                        _print(f"  Query {i+1}: {q[:60]}... ({result.get('time', 0):.2f}s)")
+                    query_results.append(result)
+        except Exception as e:
+            _print(f"[parallel] Concurrent execution failed, falling back to sequential: {e}")
+            # Fall back to sequential execution
+            for q in queries_to_run:
+                _print(f"\n  Query: {q}")
+                qr = _run_vl_rag_query(
+                    q,
+                    store=store,
+                    reranker_vl=reranker_vl,
+                    rrf=rrf,
+                    fallback_reranker=fallback_reranker,
+                    all_chunks=all_chunks,
+                    knowledge_graph=knowledge_graph,
+                    context_budget=context_budget,
+                    rlm=rlm,
+                    fallback_hierarchy=fallback_hierarchy,
+                    provider=provider,
+                    resolved_model=resolved_model,
+                    max_depth=max_depth,
+                    max_iterations=max_iterations,
+                    verbose=not _quiet,
+                    rrf_weights=rrf_weights or [4.0, 1.0],
+                    use_graph_augmented=use_graph_augmented,
+                    graph_hops=graph_hops,
+                )
+                query_results.append(qr)
+    else:
+        # Sequential execution for single query
+        for q in queries_to_run:
+            _print(f"\n  Query: {q}")
+            qr = _run_vl_rag_query(
             q,
             store=store,
             reranker_vl=reranker_vl,

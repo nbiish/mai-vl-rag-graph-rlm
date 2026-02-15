@@ -70,6 +70,16 @@ class MCPSettings:
     collections_root: Optional[str] = None
     log_level: str = "INFO"
 
+    @property
+    def use_api(self) -> bool:
+        """Return True if using API (default), False if using local models.
+        
+        Local models are only used if VRLMRAG_LOCAL=true is explicitly set in .env.
+        MCP exposes balanced and comprehensive modes, both API-first by default,
+        to support all content types: images, video, audio, documents.
+        """
+        return not self.use_local
+
     def resolve_provider_model(self) -> tuple[str, Optional[str]]:
         """Resolve effective provider and model.
         

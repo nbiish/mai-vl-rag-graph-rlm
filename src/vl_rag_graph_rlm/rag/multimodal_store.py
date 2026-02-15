@@ -101,6 +101,59 @@ class MultimodalVectorStore:
                 self._load()
                 self._rebuild_content_hashes()
     
+    def add_embedding(
+        self,
+        embedding: List[float],
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        doc_id: Optional[str] = None,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+    ) -> str:
+        """Add a pre-computed embedding directly to the store.
+        
+        This method is used for batch embedding scenarios where embeddings
+        are generated externally (e.g., batch_embed_images) and then added
+        to the store without re-computing.
+        
+        Args:
+            embedding: Pre-computed embedding vector
+            content: Text content/description for the document
+            metadata: Optional metadata dict
+            doc_id: Optional document ID
+            image_path: Optional path to associated image
+            video_path: Optional path to associated video
+            
+        Returns:
+            Document ID
+        """
+        doc_id = doc_id or f"emb_{len(self.documents)}"
+        metadata = metadata or {}
+        
+        # Skip if content already embedded (O(1) deduplication)
+        content_hash = self._hash_content(content)
+        if content_hash in self._hash_to_id:
+            return self._hash_to_id[content_hash]
+        
+        doc = MultimodalDocument(
+            id=doc_id,
+            content=content,
+            metadata=metadata,
+            embedding=embedding,
+            image_path=image_path,
+            video_path=video_path,
+        )
+        
+        self.documents[doc_id] = doc
+        self._content_hashes.add(content_hash)
+        self._hash_to_id[content_hash] = doc_id
+        self._matrix_dirty = True
+        
+        if self.storage_path:
+            self._save()
+        
+        return doc_id
+
     def add_text(
         self,
         content: str,
