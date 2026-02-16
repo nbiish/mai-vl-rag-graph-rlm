@@ -71,7 +71,7 @@ Audio transcription now routes through the full omni chain — no more silent fa
 - **Progress bars** — tqdm integration for embedding/search operations
 
 ### 🎯 Smart Defaults (New!)
-- **MCP mode surface** — `balanced` (default) and `comprehensive` (deep analysis)
+- **MCP mode surface** — `fast` (default) and `comprehensive` (deep analysis)
 - **Canonical benchmark orchestrator** — `tests/full_matrix_benchmark.py` for pre-final and final confirmation gates
 - **Simplified MCP server** — 3 consolidated tools for reduced context usage: `analyze`, `query_collection`, `collection_manage`
 - **API hierarchy default** — Provider auto-fallback enabled by default (set keys in .env)
@@ -140,14 +140,14 @@ vrlmrag -c research -c code -q "How?"        # blend multiple collections
 
 ### For LLMs (Start Here)
 - **[QUICKREF.md](QUICKREF.md)** → Ultra-simplified 3-tool reference (`analyze`, `query_collection`, `collection_manage`)
-- **Mode selection**: Use `balanced` by default; switch to `comprehensive` for deeper analysis.
+- **Mode selection**: Use `fast` by default; switch to `comprehensive` for deeper analysis.
 - **What works**: 9/9 providers, collections, fallback keys, API embedding all verified working.
 
 ### Test Orchestration (PPTX + Video)
 - **Pre-final gate**: `python tests/full_matrix_benchmark.py --phase pre_final`
-  - Modes: `balanced`, `comprehensive`
+  - Modes: `fast`, `comprehensive`
 - **Final confirmation gate**: `python tests/full_matrix_benchmark.py --phase final_confirmation`
-  - Modes: `balanced`, `comprehensive`
+  - Modes: `fast`, `comprehensive`
 - Legacy wrappers: `tests/benchmark_modes.py` and `tests/timing_test.py` delegate to the canonical orchestrator.
 
 ### API-only Performance & Limits Planning

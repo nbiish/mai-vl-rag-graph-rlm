@@ -1,8 +1,8 @@
 """Comprehensive Speed & Accuracy Test Suite for VL-RAG-Graph-RLM
 
 Tests three configuration profiles across all content types:
-- Current (Aggressive): max_depth=5, max_iterations=15, multi_query=True, graph=True
-- Balanced (Proposed): max_depth=3, max_iterations=8, multi_query=True, graph=True  
+- Comprehensive: max_depth=5, max_iterations=15, multi_query=True, graph=True
+- Thorough: max_depth=5, max_iterations=15, multi_query=True, graph=True  
 - Fast: max_depth=2, max_iterations=5, multi_query=False, graph=False
 
 Content types tested:
@@ -50,23 +50,23 @@ class TestResult:
 
 # Define test profiles
 PROFILES = {
-    "current_aggressive": TestProfile(
-        name="Current (Aggressive)",
+    "comprehensive": TestProfile(
+        name="Comprehensive",
         max_depth=5,
         max_iterations=15,
         multi_query=True,
         graph_augmented=True,
         graph_hops=3,
-        description="Deep recursion + high iterations + graph + multi-query"
+        description="All best features enabled. Maximum quality for important analysis"
     ),
-    "balanced": TestProfile(
-        name="Balanced (Proposed)",
-        max_depth=3,
-        max_iterations=8,
+    "thorough": TestProfile(
+        name="Thorough",
+        max_depth=5,
+        max_iterations=15,
         multi_query=True,
         graph_augmented=True,
-        graph_hops=2,
-        description="Moderate recursion + graph + multi-query for quality"
+        graph_hops=3,
+        description="Maximum accuracy with comprehensive analysis"
     ),
     "fast": TestProfile(
         name="Fast",
@@ -273,8 +273,8 @@ def generate_report(test_data: Dict) -> str:
         "",
         "| Profile | Speed | Accuracy | Best For |",
         "|---------|-------|----------|----------|",
-        "| Current (Aggressive) | ⭐⭐ | ⭐⭐⭐⭐⭐ | Deep research, critical analysis |",
-        "| Balanced | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | General purpose, production use |",
+        "| Comprehensive | ⭐⭐ | ⭐⭐⭐⭐⭐ | Deep research, critical analysis |",
+        "| Thorough | ⭐⭐⭐ | ⭐⭐⭐⭐ | Maximum accuracy analysis |",
         "| Fast | ⭐⭐⭐⭐⭐ | ⭐⭐ | Quick summaries, rapid iteration |",
         "",
     ])

@@ -16,10 +16,10 @@ From latest focused production runs:
 
 2. **Gate C/final-confirmation benchmark (`tests/full_matrix_benchmark.py --phase final_confirmation --provider auto`)**
    - PPTX:
-     - `balanced`: success (~52.0s)
+     - `fast`: success (~52.0s)
      - `comprehensive`: success (~71.3s)
    - Video:
-     - `balanced`: success (~67.1s)
+     - `fast`: success (~67.1s)
      - `comprehensive`: timeout at 120s *(this run used `--video-timeout 120` for faster iteration)*
    - Runtime media behavior:
      - audio upload guard triggered before omni call (`Skipping omni audio upload: payload too large`)
@@ -35,7 +35,7 @@ Result artifacts:
 
 1. **Gate A: API configuration sanity (2-4 min) — required on every change**
    - CLI help/import sanity.
-   - MCP tool schema sanity (`balanced`/`comprehensive` only).
+   - MCP tool schema sanity (`fast`/`comprehensive` only).
    - Provider key presence and model resolution checks.
 
 2. **Gate B: API smoke execution (5-10 min) — required on every change**
@@ -45,7 +45,7 @@ Result artifacts:
 
 3. **Gate C: Full multimodal benchmark (scheduled/manual)**
    - PPTX + video.
-   - `balanced` and `comprehensive` only.
+   - `fast` and `comprehensive` only.
    - Run only after Gate A/B pass.
 
 ### 2) Enforce API-only in test harnesses

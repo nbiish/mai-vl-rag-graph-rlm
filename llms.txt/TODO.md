@@ -10,7 +10,7 @@
 
 1. **Benchmark modes narrowed to production scope**
    - `tests/full_matrix_benchmark.py` now exercises only:
-     - `balanced`
+     - `fast`
      - `comprehensive`
    - Both `--phase pre_final` and `--phase final_confirmation` now map to the same two production modes.
    - Removed `expanded_comprehensive` from the benchmark profile map and report overhead section.
@@ -29,7 +29,7 @@
 4. **llms.txt strategy doc aligned**
    - `llms.txt/API_TESTING_PERF_RATE_LIMITS.md` now states:
      - Gate B is hierarchy-route readiness smoke (`provider=auto`)
-     - Gate C is `balanced` + `comprehensive` only
+     - Gate C is `fast` + `comprehensive` only
      - rate-limit references are retained for safety/backoff policy, not benchmark targets
 
 ### Execution snapshot (Feb 15, 2026)
@@ -41,10 +41,10 @@
 2. **Final confirmation (production modes only)**
    - Command: `python tests/full_matrix_benchmark.py --phase final_confirmation --provider auto --video-timeout 120`
    - PPTX:
-     - `balanced`: success (~52.0s)
+     - `fast`: success (~52.0s)
      - `comprehensive`: success (~71.3s)
    - Video:
-     - `balanced`: success (~67.1s)
+     - `fast`: success (~67.1s)
      - `comprehensive`: timeout (120s)
    - Runtime media behavior:
      - `Skipping omni audio upload: payload too large ...` guard triggered
@@ -64,7 +64,7 @@
 ### Findings from current benchmark output review
 
 1. **Current pre-final benchmark status is blocked by timeouts**
-   - PPTX: `balanced`, `comprehensive`, `expanded_comprehensive` all timed out at 180s.
+   - PPTX: `fast`, `comprehensive`, `expanded_comprehensive` all timed out at 180s.
    - Video: all tested modes timed out at 300s.
 
 2. **Observed bottlenecks and failure signatures**
@@ -120,9 +120,9 @@ Remaining gap:
 1. **Canonical benchmark orchestrator established**
    - `tests/full_matrix_benchmark.py` is now the source of truth for orchestrated timing and status runs.
    - Added phase-gated execution:
-     - `--phase pre_final` -> `balanced`, `comprehensive`, `expanded_comprehensive`
-     - `--phase final_confirmation` -> `balanced`, `comprehensive`
-   - Removed legacy `fast` and `thorough` profile execution from the canonical matrix.
+     - `--phase pre_final` -> `fast`, `comprehensive`, `expanded_comprehensive`
+     - `--phase final_confirmation` -> `fast`, `comprehensive`
+   - Removed legacy `thorough` profile execution from the canonical matrix.
 
 2. **Legacy benchmark scripts consolidated (non-breaking wrappers)**
    - `tests/benchmark_modes.py` delegates to: `full_matrix_benchmark.py --phase pre_final`
@@ -135,11 +135,11 @@ Remaining gap:
 
 4. **LLM-facing docs aligned with MCP two-mode surface**
    - `llms.txt/QUICKREF.md` updated to only present:
-     - `balanced` (default)
+     - `fast` (default)
      - `comprehensive` (deep analysis)
    - Added canonical pre-final/final test commands to QUICKREF.
    - `llms.txt/README.md` updated for:
-     - MCP mode surface (`balanced` / `comprehensive`)
+     - MCP mode surface (`fast` / `comprehensive`)
      - canonical benchmark orchestrator usage
      - updated hierarchy ordering snapshot
 
@@ -701,7 +701,6 @@ VRLMRAG_REASONING_TIMEOUT=600    # Override only reasoning model timeouts
 - [ ] `--collection-tag <name> <tag>` — tag collections for organization and filtering
 - [ ] `--collection-search <query>` — search across all collections without specifying names
 - [ ] Collection-level metadata: custom key-value pairs, creation notes, version tracking
-- [ ] Remote collection sync (S3/GCS) — push/pull collections to cloud storage
 - [ ] Collection snapshots — save/restore point-in-time versions
 - [ ] Collection statistics dashboard — embedding distribution, KG entity counts, query history
 - [ ] Automatic collection suggestions — recommend relevant collections based on query content

@@ -3431,9 +3431,9 @@ def main():
 
     parser.add_argument(
         "--profile",
-        choices=["fast", "balanced", "thorough", "comprehensive"],
+        choices=["fast", "thorough", "comprehensive"],
         default="comprehensive",
-        help="Analysis depth — comprehensive (default) for full VL-RAG-Graph-RLM, or fast for quick search",
+        help="Analysis depth — comprehensive (default) for full VL-RAG-Graph-RLM, fast for quick search, thorough for research",
     )
 
     parser.add_argument(

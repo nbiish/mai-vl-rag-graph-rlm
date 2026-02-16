@@ -3,7 +3,7 @@
 
 Runs timed validation across:
 - Content: PowerPoint + Video
-- Modes: balanced, comprehensive
+- Modes: fast, comprehensive
 
 Each test runs in an isolated process with timeout to avoid hangs.
 """
@@ -38,12 +38,12 @@ class CaseResult:
 
 
 PROFILES: Dict[str, Dict[str, Any]] = {
-    "balanced": {
-        "max_depth": 3,
-        "max_iterations": 8,
-        "multi_query": True,
-        "graph_augmented": True,
-        "graph_hops": 2,
+    "fast": {
+        "max_depth": 2,
+        "max_iterations": 5,
+        "multi_query": False,
+        "graph_augmented": False,
+        "graph_hops": 1,
         "use_api": True,
         "text_only": False,
     },
@@ -165,9 +165,9 @@ def run_api_preflight(content_type: str, provider: str, timeout_seconds: int) ->
 
 PHASE_MODES: Dict[str, list[str]] = {
     # Pre-final gate: production-facing MCP modes only
-    "pre_final": ["balanced", "comprehensive"],
+    "pre_final": ["fast", "comprehensive"],
     # Final confirmation: consolidated user-facing modes only
-    "final_confirmation": ["balanced", "comprehensive"],
+    "final_confirmation": ["fast", "comprehensive"],
 }
 
 
@@ -294,7 +294,7 @@ def main() -> None:
         "--phase",
         choices=sorted(PHASE_MODES.keys()),
         default="pre_final",
-        help="pre_final or final_confirmation (both run balanced + comprehensive)",
+        help="pre_final or final_confirmation (both run fast + comprehensive)",
     )
     parser.add_argument(
         "--provider",

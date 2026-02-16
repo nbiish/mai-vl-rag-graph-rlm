@@ -75,7 +75,7 @@ class MCPSettings:
         """Return True if using API (default), False if using local models.
         
         Local models are only used if VRLMRAG_LOCAL=true is explicitly set in .env.
-        MCP exposes balanced and comprehensive modes, both API-first by default,
+        MCP exposes fast and comprehensive modes, both API-first by default,
         to support all content types: images, video, audio, documents.
         """
         return not self.use_local

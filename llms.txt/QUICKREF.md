@@ -1,6 +1,6 @@
 # Quick Reference — VL-RAG-Graph-RLM MCP Tools
 
-> **For LLMs**: Ultra-simplified tool reference. Default = `balanced`. Use `mode="comprehensive"` for deeper analysis.
+> **For LLMs**: Ultra-simplified tool reference. Default = `fast`. Use `mode="comprehensive"` for deeper analysis.
 
 ---
 
@@ -15,7 +15,7 @@
 {
   "input_path": "./my-document.pdf",  // Required: file or folder
   "query": "Summarize the key findings",  // Optional: your question
-  "mode": "balanced",  // Optional: "balanced" (default) or "comprehensive"
+  "mode": "fast",  // Optional: "fast" (default) or "comprehensive"
   "output_path": null  // Optional: save report to file
 }
 ```
@@ -24,7 +24,7 @@
 
 **Examples**:
 ```json
-// Default balanced analysis
+// Default fast analysis
 {"input_path": "./research-papers", "query": "What are the main conclusions?"}
 
 // Deep analysis when requested
@@ -42,7 +42,7 @@
 {
   "collection": "research",  // Required: collection name
   "query": "What did the papers say about X?",  // Required: your question
-  "mode": "balanced"  // Optional: "balanced" (default) or "comprehensive"
+  "mode": "fast"  // Optional: "fast" (default) or "comprehensive"
 }
 ```
 
@@ -106,10 +106,10 @@
 
 | Mode | Use When | Features |
 |------|----------|----------|
-| `balanced` | **Default** for normal use | Strong quality/speed tradeoff, multi-query + graph augmentation |
-| `comprehensive` | When user asks for depth/exhaustiveness | Deeper recursion/iterations for maximum analysis quality |
+| `fast` | **Default** for normal use | Quick results, minimal resources, no graph augmentation |
+| `comprehensive` | When user asks for depth/exhaustiveness | Deeper recursion/iterations, multi-query, graph augmentation for maximum analysis quality |
 
-**Rule**: If user doesn't specify mode, use `balanced`. Use `comprehensive` for deep, high-stakes, or exhaustive analysis.
+**Rule**: If user doesn't specify mode, use `fast`. Use `comprehensive` for deep, high-stakes, or exhaustive analysis.
 
 ---
 
@@ -118,10 +118,10 @@
 Use a single orchestrator for pre-final and final gates:
 
 ```bash
-# Pre-final: balanced + comprehensive
+# Pre-final: fast + comprehensive
 python tests/full_matrix_benchmark.py --phase pre_final
 
-# Final confirmation: balanced + comprehensive only
+# Final confirmation: fast + comprehensive only
 python tests/full_matrix_benchmark.py --phase final_confirmation
 ```
 
@@ -168,7 +168,7 @@ Legacy wrappers delegate to the same orchestrator:
 ## Quick Commands
 
 ```bash
-# Analyze document (balanced default)
+# Analyze document (fast default)
 vrlmrag ./document.pdf -q "Summarize"
 
 # Deep analysis

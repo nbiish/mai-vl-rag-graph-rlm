@@ -1,10 +1,9 @@
 """Configuration profiles for VL-RAG-Graph-RLM.
 
 Provides preset configurations optimized for different use cases:
-- fast: Quick results, minimal resources
-- balanced: Good quality with reasonable speed (default)
+- fast: Quick results, minimal resources (default for MCP)
 - thorough: Maximum accuracy, comprehensive analysis
-- comprehensive: All best features enabled (new default recommendation)
+- comprehensive: All best features enabled (default for CLI)
 """
 
 from typing import Dict, Any, Optional
@@ -64,18 +63,6 @@ PROFILES: Dict[str, ProfileConfig] = {
         description="Fast results with minimal resource usage. Good for quick lookups."
     ),
     
-    "balanced": ProfileConfig(
-        top_k_dense=50,
-        top_k_keyword=50,
-        rerank_candidates=30,
-        final_context_chunks=10,
-        max_depth=3,
-        max_iterations=10,
-        chunk_size=1000,
-        chunk_overlap=100,
-        description="Balanced quality and speed. Good for general use."
-    ),
-    
     "thorough": ProfileConfig(
         top_k_dense=100,
         top_k_keyword=100,
@@ -128,7 +115,7 @@ def get_profile(name: str) -> ProfileConfig:
     """Get a configuration profile by name.
     
     Args:
-        name: Profile name (fast, balanced, thorough, comprehensive)
+        name: Profile name (fast, thorough, comprehensive)
         
     Returns:
         ProfileConfig instance

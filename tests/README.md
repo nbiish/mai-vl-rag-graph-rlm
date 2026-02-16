@@ -51,7 +51,7 @@ python tests/full_matrix_benchmark.py --phase pre_final
 ```
 
 Profiles exercised:
-- `balanced`
+- `fast`
 - `comprehensive`
 
 ### 2) Final confirmation gate
@@ -63,7 +63,7 @@ python tests/full_matrix_benchmark.py --phase final_confirmation
 ```
 
 Profiles exercised:
-- `balanced`
+- `fast`
 - `comprehensive`
 
 ## Backward compatibility wrappers
