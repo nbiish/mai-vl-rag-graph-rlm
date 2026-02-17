@@ -183,44 +183,20 @@ class VLRAGGraphRLM:
             max_iterations: Maximum REPL iterations per call
             temperature: Sampling temperature
             _current_depth: Internal depth tracker (don't set manually)
-            **client_kwargs: Additional arguments for the client
-            
-        Examples:
-            # Use model from env var or default (OpenRouter + Kimi K2.5)
-            >>> vlrag = VLRAGGraphRLM()
-            
-            # Override model in code for specific section
-            >>> vlrag = VLRAGGraphRLM(provider="openrouter", model="gpt-4o")
-            
-            # Set model via environment
-            >>> # export OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
-            >>> vlrag = VLRAGGraphRLM(provider="openrouter")
+            **client_kwargs: Additional arguments for the client (including early_stop_threshold)
         """
         self.provider = provider
-        
-        # Model resolution priority: code > env var > hardcoded default
         self.model = model or _get_default_model(provider)
-        self.recursive_model = recursive_model or _get_recursive_model(provider, self.model)
-        
+        self.recursive_model = recursive_model or self.model
         self.api_key = api_key
         self.api_base = api_base
         self.max_depth = max_depth
         self.max_iterations = max_iterations
         self.temperature = temperature
         self._current_depth = _current_depth
-        self.client_kwargs = client_kwargs
+        self.client_kwargs = client_kwargs or {}
 
-        # Initialize client
-        client_args = {
-            "model_name": self.model,
-            **client_kwargs
-        }
-        if api_key:
-            client_args["api_key"] = api_key
-        if api_base:
-            client_args["api_base"] = api_base
-
-        self.client = get_client(provider, **client_args)
+        self.client = get_client(provider, **self.client_kwargs)
         self.repl = REPLExecutor()
 
         # Statistics
@@ -348,11 +324,16 @@ class VLRAGGraphRLM:
             # Quality metrics: response length, code presence, structural completeness
             current_quality = self._assess_response_quality(response, code_blocks)
             
+            # Get thresholds from client_kwargs (with defaults)
+            early_stop_threshold = self.client_kwargs.get('early_stop_threshold', 0.7)
+            quality_diff_threshold = self.client_kwargs.get('quality_diff_threshold', 0.1)
+            plateau_iterations = self.client_kwargs.get('early_stop_plateau_iterations', 2)
+            
             if iteration > 2:  # Only after a few iterations
                 quality_diff = abs(current_quality - previous_response_quality)
-                if quality_diff < 0.1:  # Quality hasn't changed much
+                if quality_diff < quality_diff_threshold:  # Quality hasn't changed much
                     quality_plateau_count += 1
-                    if quality_plateau_count >= 2 and current_quality > 0.7:
+                    if quality_plateau_count >= plateau_iterations and current_quality > early_stop_threshold:
                         # Quality plateaued at high level - stop early
                         exec_time = time.time() - start_time
                         # Generate final answer from current state

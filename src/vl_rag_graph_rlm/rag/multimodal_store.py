@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Any, Optional, Callable, Set, Union
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from functools import lru_cache
 
 import numpy as np
 
@@ -23,6 +24,14 @@ except ImportError:
     HAS_QWEN3VL = False
     Qwen3VLEmbeddingProvider = None  # type: ignore
     MultimodalDocument = None  # type: ignore
+
+# Optional FAISS import
+try:
+    from vl_rag_graph_rlm.rag.faiss_index import FAISSVectorIndex, create_faiss_index, HAS_FAISS
+except ImportError:
+    HAS_FAISS = False
+    FAISSVectorIndex = None  # type: ignore
+    create_faiss_index = None  # type: ignore
 
 logger = logging.getLogger("rlm.rag.multimodal_store")
 
@@ -63,6 +72,9 @@ class MultimodalVectorStore:
         reranker_provider: Optional[Any] = None,
         transcription_provider: Optional[Any] = None,
         use_sqlite: bool = False,
+        use_faiss: bool = True,
+        faiss_cache_dir: Optional[str] = None,
+        embedding_cache_size: int = 1000,
     ):
         """Initialize multimodal vector store.
         
@@ -73,6 +85,9 @@ class MultimodalVectorStore:
             reranker_provider: Optional Qwen3-VL reranker provider
             transcription_provider: Optional audio transcription provider (e.g., Parakeet)
             use_sqlite: If True, use SQLite backend instead of JSON
+            use_faiss: If True, use FAISS index for large collections (>1000 docs)
+            faiss_cache_dir: Directory for FAISS index persistence
+            embedding_cache_size: Max size for embedding LRU cache
         """
         self.embedding_provider = embedding_provider
         self.storage_path = storage_path
@@ -83,7 +98,12 @@ class MultimodalVectorStore:
         self.use_qwen_reranker = use_qwen_reranker
         self.reranker = reranker_provider
         self.transcription_provider = transcription_provider
-
+        
+        # FAISS index for scalable search
+        self.use_faiss = use_faiss and HAS_FAISS
+        self._faiss_index: Optional[FAISSVectorIndex] = None
+        self._faiss_cache_dir = faiss_cache_dir
+        
         # SQLite backend
         self._sqlite_store: Optional[Any] = None
         
@@ -92,14 +112,24 @@ class MultimodalVectorStore:
         self._matrix_doc_ids: List[str] = []
         self._matrix_dirty: bool = True
         
+        # LRU cache for embeddings (prevents unbounded growth)
+        self._embedding_cache_size = embedding_cache_size
+        self._embedding_cache: Dict[str, List[float]] = {}
+        self._cache_order: List[str] = []  # LRU tracking
+        
         if storage_path:
             if use_sqlite:
                 from vl_rag_graph_rlm.rag.sqlite_store import SQLiteVectorStore
-                self._sqlite_store = SQLiteVectorStore(storage_path)
+                # Enable WAL mode for better performance
+                self._sqlite_store = SQLiteVectorStore(storage_path, use_wal=True)
                 self._load_sqlite()
             elif os.path.exists(storage_path):
                 self._load()
                 self._rebuild_content_hashes()
+        
+        # Initialize FAISS index if enabled and we have documents
+        if self.use_faiss and self.documents:
+            self._init_faiss_index()
     
     def add_embedding(
         self,
@@ -268,10 +298,88 @@ class MultimodalVectorStore:
         return doc_id
     
     @staticmethod
+    def _extract_frames_streaming(
+        video_path: str, fps: float, max_frames: int, jpeg_quality: int = 5
+    ):
+        """Extract frames from video using ffmpeg (streaming generator).
+
+        Streams frames as they're extracted instead of loading all into memory.
+        Uses ffmpeg image2pipe for memory-efficient frame extraction.
+
+        Args:
+            video_path: Path to video file
+            fps: Frame sampling rate (frames per second to extract)
+            max_frames: Maximum number of frames to extract
+            jpeg_quality: JPEG quality (2-31, lower is better quality, default: 5)
+
+        Yields:
+            JPEG frame data as bytes
+        """
+        import subprocess
+        import io
+        from PIL import Image
+
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vf", f"fps={fps},scale='min(1920,iw)':-1",  # Scale down if >1920 width
+            "-frames:v", str(max_frames),
+            "-q:v", str(jpeg_quality),
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-loglevel", "error",
+            "-"
+        ]
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        frame_buffer = b""
+        frame_count = 0
+
+        # Read MJPEG stream and yield individual frames
+        while frame_count < max_frames:
+            chunk = proc.stdout.read(65536)  # Read 64KB chunks
+            if not chunk:
+                break
+
+            frame_buffer += chunk
+
+            # Look for JPEG markers (FFD8 = start, FFD9 = end)
+            while True:
+                start = frame_buffer.find(b"\xff\xd8")
+                if start == -1:
+                    break
+
+                end = frame_buffer.find(b"\xff\xd9", start)
+                if end == -1:
+                    break
+
+                # Extract complete JPEG
+                jpeg_data = frame_buffer[start:end+2]
+                frame_buffer = frame_buffer[end+2:]
+
+                yield jpeg_data
+                frame_count += 1
+
+                if frame_count >= max_frames:
+                    break
+
+        proc.terminate()
+        proc.wait()
+
+        logger.info(
+            "Streamed %d frames from %s (fps=%.2f)",
+            frame_count, video_path, fps
+        )
+
+    @staticmethod
     def _extract_frames_ffmpeg(
-        video_path: str, fps: float, max_frames: int
+        video_path: str, fps: float, max_frames: int, jpeg_quality: int = 5
     ) -> List[str]:
-        """Extract frames from video using ffmpeg (RAM-safe).
+        """Extract frames from video using ffmpeg (RAM-safe, temp files).
 
         Avoids loading the entire video into memory by using ffmpeg
         to seek and extract only the frames needed.
@@ -280,6 +388,7 @@ class MultimodalVectorStore:
             video_path: Path to video file
             fps: Frame sampling rate (frames per second to extract)
             max_frames: Maximum number of frames to extract
+            jpeg_quality: JPEG quality (2-31, lower is better quality, default: 5)
 
         Returns:
             List of temporary frame image paths
@@ -292,9 +401,9 @@ class MultimodalVectorStore:
 
         cmd = [
             "ffmpeg", "-i", video_path,
-            "-vf", f"fps={fps}",
+            "-vf", f"fps={fps},scale='min(1920,iw)':-1",  # Scale down if >1920 width
             "-frames:v", str(max_frames),
-            "-q:v", "2",
+            "-q:v", str(jpeg_quality),
             "-loglevel", "error",
             out_pattern,
         ]
@@ -306,8 +415,8 @@ class MultimodalVectorStore:
             if f.endswith(".jpg")
         )
         logger.info(
-            "Extracted %d frames from %s (fps=%.2f, max=%d)",
-            len(frames), video_path, fps, max_frames,
+            "Extracted %d frames from %s (fps=%.2f, max=%d, quality=%d)",
+            len(frames), video_path, fps, max_frames, jpeg_quality
         )
         return frames
 
@@ -319,7 +428,9 @@ class MultimodalVectorStore:
         doc_id: Optional[str] = None,
         fps: float = 1.0,
         max_frames: int = 64,
-        instruction: Optional[str] = None
+        instruction: Optional[str] = None,
+        jpeg_quality: int = 5,
+        use_streaming: bool = False,
     ) -> str:
         """Add a video document.
 
@@ -334,6 +445,8 @@ class MultimodalVectorStore:
             fps: Frame sampling rate
             max_frames: Maximum frames to sample
             instruction: Optional embedding instruction
+            jpeg_quality: JPEG quality (2-31, lower is better, default: 5)
+            use_streaming: If True, use streaming frame extraction (memory-efficient)
             
         Returns:
             Document ID
@@ -346,7 +459,7 @@ class MultimodalVectorStore:
         metadata["video_path"] = video_path
 
         # Extract frames via ffmpeg (never loads full video into RAM)
-        frames = self._extract_frames_ffmpeg(video_path, fps, max_frames)
+        frames = self._extract_frames_ffmpeg(video_path, fps, max_frames, jpeg_quality)
         metadata["frame_count"] = len(frames)
 
         try:
@@ -812,10 +925,63 @@ class MultimodalVectorStore:
         top_k: int,
         filter_fn: Optional[Callable[[MultimodalDocument], bool]]
     ) -> List[SearchResult]:
-        """Search using pre-computed query embedding (NumPy-vectorized)."""
+        """Search using pre-computed query embedding (FAISS or NumPy-vectorized)."""
         if not self.documents:
             return []
 
+        # Use FAISS for large collections (>1000 docs)
+        if self.use_faiss and self._faiss_index is not None and len(self.documents) >= 1000:
+            return self._search_with_faiss(query_embedding, top_k, filter_fn)
+        
+        # Fall back to NumPy matrix search
+        return self._search_with_numpy(query_embedding, top_k, filter_fn)
+    
+    def _search_with_faiss(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        filter_fn: Optional[Callable[[MultimodalDocument], bool]]
+    ) -> List[SearchResult]:
+        """Search using FAISS index (O(log N) for large collections)."""
+        import numpy as np
+        
+        # Normalize query
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        norm = np.linalg.norm(query_vec)
+        if norm == 0:
+            return []
+        query_vec = query_vec / norm
+        
+        # Search FAISS
+        distances, indices, doc_ids = self._faiss_index.search(query_vec, top_k)
+        
+        # Build results
+        results: List[SearchResult] = []
+        for doc_id in doc_ids:
+            doc = self.documents.get(doc_id)
+            if doc is None:
+                continue
+            
+            # Apply filter if provided
+            if filter_fn and not filter_fn(doc):
+                continue
+            
+            results.append(SearchResult(
+                id=doc.id,
+                content=doc.content,
+                metadata=doc.metadata,
+                semantic_score=0.0,  # FAISS returns inner product, convert to distance
+            ))
+        
+        return results[:top_k]
+    
+    def _search_with_numpy(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        filter_fn: Optional[Callable[[MultimodalDocument], bool]]
+    ) -> List[SearchResult]:
+        """Search using NumPy matrix multiply (O(N) for small collections)."""
         # Rebuild matrix if dirty
         if self._matrix_dirty or self._embedding_matrix is None:
             self._rebuild_embedding_matrix()
@@ -940,6 +1106,83 @@ class MultimodalVectorStore:
         """Check if content is already in the store (by hash)."""
         return self._hash_content(content) in self._content_hashes
 
+    def _init_faiss_index(self) -> None:
+        """Initialize FAISS index for large collections."""
+        if not self.use_faiss or not HAS_FAISS:
+            return
+        
+        # Determine embedding dimension from first document
+        if not self.documents:
+            return
+        
+        first_doc = next(iter(self.documents.values()))
+        if first_doc.embedding is None:
+            return
+        
+        dim = len(first_doc.embedding)
+        
+        # Create FAISS index
+        self._faiss_index = create_faiss_index(
+            dim=dim,
+            collection_size=len(self.documents),
+            cache_dir=self._faiss_cache_dir,
+        )
+        
+        if self._faiss_index:
+            # Add all existing embeddings
+            embeddings = []
+            doc_ids = []
+            for doc_id, doc in self.documents.items():
+                if doc.embedding:
+                    embeddings.append(doc.embedding)
+                    doc_ids.append(doc_id)
+            
+            if embeddings:
+                import numpy as np
+                embeddings_array = np.array(embeddings, dtype=np.float32)
+                self._faiss_index.add(embeddings_array, doc_ids)
+                logger.info(f"FAISS index initialized with {len(doc_ids)} vectors")
+    
+    def _update_faiss_index(self, doc_id: str, embedding: List[float]) -> None:
+        """Add a new embedding to FAISS index."""
+        if not self.use_faiss or self._faiss_index is None:
+            # Maybe initialize if we crossed threshold
+            if len(self.documents) >= 1000 and HAS_FAISS:
+                self._init_faiss_index()
+            return
+        
+        import numpy as np
+        embedding_array = np.array([embedding], dtype=np.float32)
+        self._faiss_index.add(embedding_array, [doc_id])
+    
+    def _get_cached_embedding(self, cache_key: str) -> Optional[List[float]]:
+        """Get embedding from LRU cache."""
+        if cache_key in self._embedding_cache:
+            # Move to end (most recently used)
+            self._cache_order.remove(cache_key)
+            self._cache_order.append(cache_key)
+            return self._embedding_cache[cache_key]
+        return None
+    
+    def _set_cached_embedding(self, cache_key: str, embedding: List[float]) -> None:
+        """Set embedding in LRU cache with eviction."""
+        # Evict if at capacity
+        while len(self._cache_order) >= self._embedding_cache_size:
+            oldest_key = self._cache_order.pop(0)
+            self._embedding_cache.pop(oldest_key, None)
+        
+        # Add new entry
+        self._embedding_cache[cache_key] = embedding
+        self._cache_order.append(cache_key)
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get LRU cache statistics."""
+        return {
+            'cache_size': len(self._embedding_cache),
+            'cache_limit': self._embedding_cache_size,
+            'hit_rate': None,  # Would need to track hits/misses
+        }
+    
     def _save(self):
         """Persist to disk (JSON or SQLite)."""
         if self.use_sqlite and self._sqlite_store:

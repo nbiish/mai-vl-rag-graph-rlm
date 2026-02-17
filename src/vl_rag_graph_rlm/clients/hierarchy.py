@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 # Circuit breaker configuration
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3  # Disable after 3 consecutive failures
 CIRCUIT_BREAKER_COOLDOWN_SECONDS = 300  # 5 minute cooldown before retry
+
+# Global hierarchy circuit breaker configuration
+GLOBAL_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 2  # Trip after 2 full hierarchy exhaustion
+GLOBAL_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 600  # 10 minute cooldown for entire hierarchy
 # Default provider hierarchy order.
 # Editable via PROVIDER_HIERARCHY env var (comma-separated).
 # If openai_compatible or anthropic_compatible have API keys configured,
@@ -202,14 +206,63 @@ class HierarchyClient(BaseLM):
         self._active_client: BaseLM | None = None
         self._failed_providers: set[str] = set()
         
-        # Circuit breaker state
+        # Circuit breaker state (per-provider)
         self._consecutive_failures: dict[str, int] = {}
         self._circuit_broken_until: dict[str, float] = {}
-
+        
+        # Global hierarchy circuit breaker state
+        self._global_hierarchy_failures = 0
+        self._global_circuit_broken_until: float | None = None
+        
         # Initialize with first provider
         self._activate_next()
 
         super().__init__(model_name=self.model_name)
+    
+    def _check_global_circuit_breaker(self) -> bool:
+        """Check if global hierarchy circuit breaker allows execution.
+        
+        Returns:
+            True if execution is allowed, False if circuit is open.
+        """
+        if self._global_circuit_broken_until is not None:
+            now = time.time()
+            if now < self._global_circuit_broken_until:
+                remaining = int(self._global_circuit_broken_until - now)
+                logger.warning(
+                    "Global hierarchy circuit breaker: OPEN (cooldown %d seconds remaining). "
+                    "All providers temporarily disabled.",
+                    remaining
+                )
+                return False
+            else:
+                # Cooldown expired, reset
+                logger.info("Global hierarchy circuit breaker: cooldown expired, re-enabling")
+                self._global_circuit_broken_until = None
+                self._global_hierarchy_failures = 0
+                # Reset all provider circuits too
+                self._circuit_broken_until.clear()
+                self._consecutive_failures.clear()
+                self._failed_providers.clear()
+        return True
+    
+    def _record_global_failure(self) -> None:
+        """Record a complete hierarchy exhaustion and potentially trip global breaker."""
+        self._global_hierarchy_failures += 1
+        logger.warning(
+            "Global hierarchy failure %d/%d",
+            self._global_hierarchy_failures,
+            GLOBAL_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+        )
+        
+        if self._global_hierarchy_failures >= GLOBAL_CIRCUIT_BREAKER_FAILURE_THRESHOLD:
+            self._global_circuit_broken_until = time.time() + GLOBAL_CIRCUIT_BREAKER_COOLDOWN_SECONDS
+            logger.error(
+                "GLOBAL CIRCUIT BREAKER TRIPPED: All providers disabled for %d seconds after %d "
+                "complete hierarchy failures. Consider checking API keys or network connectivity.",
+                GLOBAL_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+                self._global_hierarchy_failures
+            )
 
     def _activate_next(self) -> None:
         """Activate the next available provider in the hierarchy."""
@@ -278,7 +331,16 @@ class HierarchyClient(BaseLM):
 
     def _try_with_fallback(self, method_name: str, *args, **kwargs) -> Any:
         """Execute a method with automatic fallback through the hierarchy."""
+        # Check global circuit breaker first
+        if not self._check_global_circuit_breaker():
+            raise RuntimeError(
+                f"Global hierarchy circuit breaker is OPEN. "
+                f"All providers temporarily disabled. "
+                f"Try again in a few minutes or check your API configuration."
+            )
+        
         last_error = None
+        hierarchy_exhausted = False
 
         while self._active_client is not None:
             try:
@@ -296,7 +358,7 @@ class HierarchyClient(BaseLM):
                 self._consecutive_failures[failed] = self._consecutive_failures.get(failed, 0) + 1
                 failure_count = self._consecutive_failures[failed]
                 
-                # Check if circuit breaker should open
+                # Check if circuit breaker should open for this provider
                 if failure_count >= CIRCUIT_BREAKER_FAILURE_THRESHOLD:
                     cooldown_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
                     self._circuit_broken_until[failed] = cooldown_until
@@ -324,7 +386,12 @@ class HierarchyClient(BaseLM):
                         self.model_name,
                     )
                 except RuntimeError:
+                    hierarchy_exhausted = True
                     break
+        
+        # All providers exhausted - record global failure
+        if hierarchy_exhausted:
+            self._record_global_failure()
 
         raise RuntimeError(
             f"All providers in hierarchy exhausted. Last error: {last_error}"

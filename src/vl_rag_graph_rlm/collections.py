@@ -236,6 +236,184 @@ def check_model_compatibility(name: str, target_model: str) -> Dict[str, Any]:
     }
 
 
+# ── Metadata ─────────────────────────────────────────────────────────
+
+
+def set_metadata(name: str, key: str, value: Any) -> None:
+    """Set custom metadata key-value pair for a collection.
+    
+    Args:
+        name: Collection name
+        key: Metadata key
+        value: Metadata value (any JSON-serializable type)
+    """
+    meta = load_collection_meta(name)
+    if "custom_metadata" not in meta:
+        meta["custom_metadata"] = {}
+    meta["custom_metadata"][key] = value
+    save_collection_meta(name, meta)
+
+
+def get_metadata(name: str, key: Optional[str] = None) -> Any:
+    """Get custom metadata for a collection.
+    
+    Args:
+        name: Collection name
+        key: Optional specific key to retrieve (returns all if None)
+        
+    Returns:
+        Metadata value or dict of all metadata
+    """
+    meta = load_collection_meta(name)
+    custom = meta.get("custom_metadata", {})
+    if key:
+        return custom.get(key)
+    return custom
+
+
+def add_creation_note(name: str, note: str, author: str = "") -> None:
+    """Add a creation note to the collection.
+    
+    Args:
+        name: Collection name
+        note: Note text
+        author: Optional author identifier
+    """
+    meta = load_collection_meta(name)
+    if "creation_notes" not in meta:
+        meta["creation_notes"] = []
+    meta["creation_notes"].append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "note": note,
+        "author": author,
+    })
+    save_collection_meta(name, meta)
+
+
+def record_version(name: str, version: str, changes: str = "") -> None:
+    """Record a version checkpoint for the collection.
+    
+    Args:
+        name: Collection name
+        version: Version string (e.g., "1.0.0")
+        changes: Description of changes in this version
+    """
+    meta = load_collection_meta(name)
+    if "versions" not in meta:
+        meta["versions"] = []
+    meta["versions"].append({
+        "version": version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "changes": changes,
+        "documents": meta.get("document_count", 0),
+        "chunks": meta.get("chunk_count", 0),
+    })
+    meta["current_version"] = version
+    save_collection_meta(name, meta)
+
+
+# ── Snapshots ─────────────────────────────────────────────────────────
+
+
+def _snapshots_dir(name: str) -> Path:
+    """Return the snapshots directory for a collection."""
+    return _collection_dir(name) / "snapshots"
+
+
+def create_snapshot(name: str, snapshot_name: Optional[str] = None) -> Path:
+    """Create a point-in-time snapshot of a collection.
+    
+    Args:
+        name: Collection name
+        snapshot_name: Optional snapshot name (defaults to timestamp)
+        
+    Returns:
+        Path to the created snapshot directory
+    """
+    slug = _sanitize_name(name)
+    snapshot_id = snapshot_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    snap_dir = _snapshots_dir(slug) / snapshot_id
+    
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy embeddings
+    emb_src = Path(_embeddings_path(slug))
+    if emb_src.exists():
+        shutil.copy2(emb_src, snap_dir / "embeddings.json")
+    
+    # Copy knowledge graph
+    kg_src = _kg_path(slug)
+    if kg_src.exists():
+        shutil.copy2(kg_src, snap_dir / "knowledge_graph.md")
+    
+    # Copy metadata with snapshot info
+    meta = load_collection_meta(slug)
+    snapshot_meta = {
+        **meta,
+        "snapshot_id": snapshot_id,
+        "snapshot_created": datetime.now(timezone.utc).isoformat(),
+        "snapshot_of": slug,
+    }
+    (snap_dir / "collection.json").write_text(
+        json.dumps(snapshot_meta, indent=2), encoding="utf-8"
+    )
+    
+    # Update collection metadata with snapshot reference
+    if "snapshots" not in meta:
+        meta["snapshots"] = []
+    meta["snapshots"].append({
+        "id": snapshot_id,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "path": str(snap_dir),
+    })
+    save_collection_meta(slug, meta)
+    
+    return snap_dir
+
+
+def list_snapshots(name: str) -> List[Dict[str, Any]]:
+    """List all snapshots for a collection.
+    
+    Args:
+        name: Collection name
+        
+    Returns:
+        List of snapshot metadata
+    """
+    meta = load_collection_meta(name)
+    return meta.get("snapshots", [])
+
+
+def restore_snapshot(name: str, snapshot_id: str) -> None:
+    """Restore a collection from a snapshot.
+    
+    Args:
+        name: Collection name
+        snapshot_id: Snapshot identifier to restore
+    """
+    slug = _sanitize_name(name)
+    snap_dir = _snapshots_dir(slug) / snapshot_id
+    
+    if not snap_dir.exists():
+        raise FileNotFoundError(f"Snapshot '{snapshot_id}' not found")
+    
+    # Restore embeddings
+    emb_snap = snap_dir / "embeddings.json"
+    if emb_snap.exists():
+        shutil.copy2(emb_snap, _embeddings_path(slug))
+    
+    # Restore knowledge graph
+    kg_snap = snap_dir / "knowledge_graph.md"
+    if kg_snap.exists():
+        shutil.copy2(kg_snap, _kg_path(slug))
+    
+    # Update metadata
+    meta = load_collection_meta(slug)
+    meta["restored_from"] = snapshot_id
+    meta["restored_at"] = datetime.now(timezone.utc).isoformat()
+    save_collection_meta(slug, meta)
+
+
 # ── Knowledge-graph helpers ────────────────────────────────────────────
 
 
@@ -542,8 +720,12 @@ def get_collection_stats(name: str) -> Dict[str, Any]:
         - knowledge graph size
         - age (days since creation)
         - last update time
+        - embedding distribution
+        - KG entity counts
+        - query history (if tracked)
     """
     from datetime import datetime
+    import numpy as np
     
     meta = load_collection_meta(name)
     kg = load_kg(name)
@@ -562,6 +744,53 @@ def get_collection_stats(name: str) -> Dict[str, Any]:
     emb_path = Path(_embeddings_path(name))
     emb_size = emb_path.stat().st_size if emb_path.exists() else 0
     
+    # Load embeddings for distribution analysis
+    embedding_distribution = {}
+    if emb_path.exists():
+        try:
+            with open(emb_path, 'r') as f:
+                emb_data = json.load(f)
+            
+            # Analyze embedding dimensions and count
+            embeddings = emb_data.get("embeddings", [])
+            if embeddings:
+                dims = [len(e.get("embedding", [])) for e in embeddings if e.get("embedding")]
+                if dims:
+                    embedding_distribution = {
+                        "count": len(embeddings),
+                        "dimensions": max(dims) if dims else 0,
+                        "avg_magnitude": 0.0,  # Would need actual computation
+                    }
+            
+            # Document type distribution
+            docs = emb_data.get("documents", {})
+            doc_types = {}
+            for doc in docs.values():
+                dtype = doc.get("type", "unknown")
+                doc_types[dtype] = doc_types.get(dtype, 0) + 1
+            embedding_distribution["document_types"] = doc_types
+            
+        except Exception:
+            pass
+    
+    # Knowledge graph entity analysis
+    kg_stats = {"size_bytes": len(kg), "has_content": bool(kg)}
+    if kg:
+        # Simple entity extraction from markdown-style KG
+        entities = set()
+        relationships = 0
+        for line in kg.split("\n"):
+            # Count lines that look like entity definitions or relationships
+            if line.startswith("##") or line.startswith("###"):
+                entities.add(line.strip("# "))
+            elif "->" in line or "|" in line:
+                relationships += 1
+        kg_stats["estimated_entities"] = len(entities)
+        kg_stats["estimated_relationships"] = relationships
+    
+    # Query history (if available in metadata)
+    query_history = meta.get("query_history", [])
+    
     return {
         "name": meta.get("name"),
         "display_name": meta.get("display_name"),
@@ -573,13 +802,74 @@ def get_collection_stats(name: str) -> Dict[str, Any]:
         "embedding_model": meta.get("embedding_model", "unknown"),
         "reranker_model": meta.get("reranker_model", "unknown"),
         "knowledge_graph_size": len(kg),
+        "knowledge_graph_stats": kg_stats,
+        "embedding_distribution": embedding_distribution,
+        "query_history_count": len(query_history),
+        "recent_queries": query_history[-5:] if query_history else [],
         "created": created,
         "updated": meta.get("updated"),
         "age_days": age_days,
         "embeddings_file_bytes": emb_size,
         "has_embeddings": emb_path.exists(),
         "has_knowledge_graph": bool(kg),
+        "custom_metadata": meta.get("custom_metadata", {}),
+        "current_version": meta.get("current_version", "unversioned"),
+        "snapshot_count": len(meta.get("snapshots", [])),
     }
+
+
+def print_collection_dashboard(name: str) -> None:
+    """Print a formatted statistics dashboard for a collection."""
+    stats = get_collection_stats(name)
+    
+    print(f"\n{'='*60}")
+    print(f"Collection Dashboard: {stats['display_name'] or stats['name']}")
+    print(f"{'='*60}")
+    
+    print(f"\n📊 Documents & Content:")
+    print(f"  • Documents: {stats['document_count']:,}")
+    print(f"  • Chunks: {stats['chunk_count']:,}")
+    print(f"  • Sources: {stats['sources_count']}")
+    print(f"  • Age: {stats['age_days']} days" if stats['age_days'] else "  • Age: N/A")
+    
+    print(f"\n🔧 Models:")
+    print(f"  • Embedding: {stats['embedding_model']}")
+    print(f"  • Reranker: {stats['reranker_model']}")
+    
+    print(f"\n📈 Embeddings:")
+    emb = stats.get('embedding_distribution', {})
+    if emb:
+        print(f"  • Count: {emb.get('count', 'N/A'):,}")
+        print(f"  • Dimensions: {emb.get('dimensions', 'N/A')}")
+        if emb.get('document_types'):
+            print(f"  • Document types:")
+            for dtype, count in emb['document_types'].items():
+                print(f"      - {dtype}: {count}")
+    else:
+        print(f"  • No embeddings loaded")
+    
+    print(f"\n🕸️ Knowledge Graph:")
+    kg = stats.get('knowledge_graph_stats', {})
+    if stats['has_knowledge_graph']:
+        print(f"  • Size: {stats['knowledge_graph_size']:,} bytes")
+        print(f"  • Estimated entities: {kg.get('estimated_entities', 'N/A')}")
+        print(f"  • Estimated relationships: {kg.get('estimated_relationships', 'N/A')}")
+    else:
+        print(f"  • No knowledge graph")
+    
+    print(f"\n🏷️ Tags: {', '.join(stats['tags']) if stats['tags'] else 'None'}")
+    
+    if stats['recent_queries']:
+        print(f"\n📝 Recent Queries:")
+        for q in stats['recent_queries']:
+            print(f"  • {q.get('query', 'N/A')[:50]}...")
+    
+    print(f"\n📦 Storage:")
+    print(f"  • Embeddings file: {stats['embeddings_file_bytes']:,} bytes")
+    print(f"  • Snapshots: {stats['snapshot_count']}")
+    print(f"  • Version: {stats['current_version']}")
+    
+    print(f"{'='*60}\n")
 
 
 def get_global_stats() -> Dict[str, Any]:
@@ -619,3 +909,132 @@ def get_global_stats() -> Dict[str, Any]:
         "tag_distribution": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)),
         "total_unique_tags": len(tag_counts),
     }
+
+
+# ── Collection Suggestions ────────────────────────────────────────────
+
+
+def suggest_collections_for_query(
+    query: str,
+    top_k: int = 3,
+    min_relevance_score: float = 0.1
+) -> List[Dict[str, Any]]:
+    """Recommend relevant collections based on query content.
+    
+    Uses keyword matching against collection names, descriptions, tags,
+    and metadata to find the most relevant collections.
+    
+    Args:
+        query: User query string
+        top_k: Number of suggestions to return
+        min_relevance_score: Minimum relevance threshold
+        
+    Returns:
+        List of suggested collections with relevance scores
+    """
+    import re
+    from collections import Counter
+    
+    all_collections = list_collections()
+    if not all_collections:
+        return []
+    
+    # Extract keywords from query (simple tokenization)
+    query_lower = query.lower()
+    query_words = set(re.findall(r'\b[a-z]{3,}\b', query_lower))
+    
+    scored_collections = []
+    
+    for coll in all_collections:
+        score = 0.0
+        match_details = []
+        
+        # Check name matches (high weight)
+        name = coll.get("name", "").lower()
+        display_name = coll.get("display_name", "").lower()
+        for word in query_words:
+            if word in name:
+                score += 0.3
+                match_details.append(f"name:{word}")
+            if word in display_name:
+                score += 0.25
+                match_details.append(f"display:{word}")
+        
+        # Check description matches (medium weight)
+        description = coll.get("description", "").lower()
+        for word in query_words:
+            if word in description:
+                score += 0.2
+                match_details.append(f"desc:{word}")
+        
+        # Check tag matches (high weight for exact matches)
+        tags = [t.lower() for t in coll.get("tags", [])]
+        for tag in tags:
+            if tag in query_lower:
+                score += 0.35
+                match_details.append(f"tag:{tag}")
+            # Partial tag matches
+            for word in query_words:
+                if word in tag or tag in word:
+                    score += 0.15
+                    match_details.append(f"tag_partial:{tag}")
+        
+        # Check custom metadata (low weight but included)
+        custom_meta = coll.get("custom_metadata", {})
+        for key, value in custom_meta.items():
+            value_str = str(value).lower()
+            key_str = key.lower()
+            for word in query_words:
+                if word in value_str or word in key_str:
+                    score += 0.1
+                    match_details.append(f"meta:{key}")
+        
+        # Boost score for document count (more content = more useful)
+        doc_count = coll.get("document_count", 0)
+        if doc_count > 0:
+            # Logarithmic boost to avoid overshadowing keyword matches
+            import math
+            score += min(0.1 * math.log10(doc_count + 1), 0.2)
+        
+        if score >= min_relevance_score:
+            scored_collections.append({
+                "name": coll.get("name"),
+                "display_name": coll.get("display_name"),
+                "description": coll.get("description"),
+                "relevance_score": round(score, 3),
+                "document_count": doc_count,
+                "chunk_count": coll.get("chunk_count", 0),
+                "tags": coll.get("tags", []),
+                "match_details": match_details[:5],  # Top 5 matches
+            })
+    
+    # Sort by relevance score descending
+    scored_collections.sort(key=lambda x: x["relevance_score"], reverse=True)
+    
+    return scored_collections[:top_k]
+
+
+def print_collection_suggestions(query: str, top_k: int = 3) -> None:
+    """Print formatted collection suggestions for a query."""
+    suggestions = suggest_collections_for_query(query, top_k)
+    
+    if not suggestions:
+        print(f"\nNo relevant collections found for: '{query[:50]}...'")
+        print("Consider creating a new collection or broadening your query.")
+        return
+    
+    print(f"\n📚 Recommended collections for: '{query[:50]}...'")
+    print(f"{'='*60}")
+    
+    for i, sugg in enumerate(suggestions, 1):
+        print(f"\n{i}. {sugg['display_name']} (score: {sugg['relevance_score']})")
+        if sugg['description']:
+            print(f"   Description: {sugg['description'][:80]}...")
+        print(f"   Documents: {sugg['document_count']:,} | Chunks: {sugg['chunk_count']:,}")
+        if sugg['tags']:
+            print(f"   Tags: {', '.join(sugg['tags'])}")
+        
+        # Show how to use it
+        print(f"   💡 Use: vrlmrag -c {sugg['name']} -q \"{query[:40]}...\"")
+    
+    print(f"{'='*60}\n")

@@ -20,16 +20,42 @@ class SQLiteVectorStore:
     - Transaction safety
     - Concurrent read access
     - Indexed queries
+    - WAL mode for append-optimized writes
     """
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, use_wal: bool = True):
         """Initialize SQLite vector store.
         
         Args:
             db_path: Path to SQLite database file
+            use_wal: If True, enable WAL mode for better concurrent performance
         """
         self.db_path = db_path
+        self.use_wal = use_wal
         self._ensure_tables()
+        
+        if use_wal:
+            self._enable_wal_mode()
+    
+    def _enable_wal_mode(self) -> None:
+        """Enable Write-Ahead Logging mode for better performance."""
+        with sqlite3.connect(self.db_path) as conn:
+            # WAL mode allows concurrent reads during writes
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Synchronous NORMAL is safe with WAL and faster than FULL
+            conn.execute("PRAGMA synchronous=NORMAL")
+            # Increase cache size for better performance (10MB)
+            conn.execute("PRAGMA cache_size=-10000")
+            conn.commit()
+            
+            # Verify WAL mode is enabled
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if mode != "wal":
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to enable WAL mode, got: {mode}")
+            else:
+                logger = logging.getLogger(__name__)
+                logger.info(f"SQLite WAL mode enabled for {self.db_path}")
     
     def _ensure_tables(self) -> None:
         """Create database tables if they don't exist."""

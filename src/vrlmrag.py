@@ -3485,6 +3485,21 @@ def main():
         help="Use lightweight text-only embeddings — skips image/video (env: VRLMRAG_TEXT_ONLY)",
     )
 
+    parser.add_argument(
+        "--no-embed", action="store_true",
+        help="Skip embedding entirely — use text chunks only without vector search (fastest fallback)"
+    )
+
+    parser.add_argument(
+        "--cache", action="store_true",
+        help="Use existing cached embeddings from .vrlmrag_store — skips re-embedding existing documents"
+    )
+
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be processed without actually adding documents or running queries"
+    )
+
     # ── Chunking configuration ────────────────────────────────────────
     parser.add_argument(
         "--chunk-size", type=int, default=1000,
@@ -4136,6 +4151,34 @@ def main():
             for tag, count in list(stats['tag_distribution'].items())[:10]:
                 print(f"    - {tag}: {count}")
         return
+
+    # ── Handle --dry-run for collection add ───────────────────────────
+    if args.dry_run and args.collection and args.add:
+        print(f"[dry-run] Would add documents from: {args.add}")
+        print(f"[dry-run] To collection(s): {', '.join(args.collection)}")
+        # Analyze what would be added
+        from pathlib import Path
+        input_path = Path(args.add)
+        if input_path.exists():
+            if input_path.is_file():
+                print(f"[dry-run] File: {input_path.name} ({input_path.stat().st_size:,} bytes)")
+            else:
+                files = list(input_path.rglob("*"))
+                print(f"[dry-run] Directory: {input_path}")
+                print(f"[dry-run] Found {len(files)} files")
+                for f in files[:10]:
+                    print(f"[dry-run]   - {f.name}")
+                if len(files) > 10:
+                    print(f"[dry-run]   ... and {len(files) - 10} more")
+        return
+
+    # ── Handle --cache flag ───────────────────────────────────────────
+    if args.cache and args.collection and args.add:
+        print("[cache] Using existing cached embeddings where available")
+        # The cache logic is handled within the embedding functions
+        # Set environment variable to signal cache mode
+        import os
+        os.environ["VRLMRAG_USE_CACHE"] = "1"
 
     if args.collection and args.add:
         run_collection_add(

@@ -6,6 +6,7 @@ Tests document processing for PPTX, TXT, MD, PDF, DOCX, CSV, and Excel files.
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock, patch, MagicMock
 
 
 class TestDocumentProcessor(unittest.TestCase):
@@ -94,7 +95,7 @@ class TestSlidingWindowChunks(unittest.TestCase):
         from vl_rag_graph_rlm.document_processor import sliding_window_chunks
         text = "Word " * 50
         chunks = sliding_window_chunks(text, chunk_size=100, overlap=20)
-        
+
         # Check that consecutive chunks share some content
         if len(chunks) >= 2:
             # The end of chunk 0 should overlap with start of chunk 1
@@ -138,6 +139,126 @@ class TestCSVProcessing(unittest.TestCase):
             self.assertIn("NYC", content)
         finally:
             Path(temp_path).unlink()
+
+
+class TestKeywordSearch(unittest.TestCase):
+    """Test keyword/BM25 search functionality."""
+
+    def test_basic_keyword_search(self):
+        """Test basic keyword matching."""
+        try:
+            from vl_rag_graph_rlm.rag.store import SimpleVectorStore
+        except ImportError:
+            self.skipTest("SimpleVectorStore not available")
+
+        store = SimpleVectorStore()
+        store.add("The quick brown fox jumps over the lazy dog")
+        store.add("Python is a programming language")
+        store.add("Machine learning is fascinating")
+
+        results = store.keyword_search("python programming", top_k=2)
+
+        self.assertTrue(len(results) > 0)
+        # Python document should be ranked higher
+        self.assertTrue(any("python" in r.content.lower() for r in results))
+
+
+class TestRRFFusion(unittest.TestCase):
+    """Test Reciprocal Rank Fusion."""
+
+    def test_rrf_basic_fusion(self):
+        """Test basic RRF fusion of two result sets."""
+        try:
+            from vl_rag_graph_rlm.dynamic_hybrid_search import DynamicHybridSearcher
+        except ImportError:
+            self.skipTest("DynamicHybridSearcher not available")
+
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_result1 = Mock()
+        mock_result1.id = "doc1"
+        mock_result1.semantic_score = 0.9
+        mock_result2 = Mock()
+        mock_result2.id = "doc2"
+        mock_result2.semantic_score = 0.8
+        mock_result3 = Mock()
+        mock_result3.id = "doc3"
+        mock_result3.semantic_score = 0.7
+        mock_vector_store.search.return_value = [mock_result1, mock_result2, mock_result3]
+
+        # Mock keyword index
+        mock_keyword_index = Mock()
+        mock_keyword_index.search.return_value = {
+            "doc2": 0.95,
+            "doc3": 0.85,
+            "doc4": 0.75,
+        }
+
+        searcher = DynamicHybridSearcher(
+            mock_vector_store,
+            mock_keyword_index,
+            default_dense_weight=4.0,
+            default_keyword_weight=1.0,
+        )
+
+        results = searcher.search("test query", top_k=5, use_dynamic=False)
+
+        self.assertTrue(len(results) > 0)
+        # All unique docs should be present
+        doc_ids = [r[0] for r in results]
+        self.assertIn("doc1", doc_ids)  # Only in dense
+        self.assertIn("doc2", doc_ids)  # In both
+        self.assertIn("doc3", doc_ids)  # In both
+        self.assertIn("doc4", doc_ids)  # Only in keyword
+
+
+class TestCollectionCRUD(unittest.TestCase):
+    """Test collection CRUD operations."""
+
+    def test_create_collection(self):
+        """Test creating a new collection."""
+        try:
+            from vl_rag_graph_rlm.collections import create_collection, collection_exists, delete_collection
+        except ImportError:
+            self.skipTest("Collections module not available")
+
+        import tempfile
+        import shutil
+
+        # Create a temp directory for collections
+        temp_dir = tempfile.mkdtemp()
+
+        with patch('vl_rag_graph_rlm.collections._collections_base_dir', temp_dir):
+            meta = create_collection("test-collection-unit")
+            self.assertEqual(meta["name"], "test-collection-unit")
+            self.assertTrue(collection_exists("test-collection-unit"))
+
+            # Cleanup
+            delete_collection("test-collection-unit")
+
+        shutil.rmtree(temp_dir)
+
+    def test_delete_collection(self):
+        """Test deleting a collection."""
+        try:
+            from vl_rag_graph_rlm.collections import create_collection, delete_collection, collection_exists
+        except ImportError:
+            self.skipTest("Collections module not available")
+
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+
+        with patch('vl_rag_graph_rlm.collections._collections_base_dir', temp_dir):
+            create_collection("to-delete-unit")
+            self.assertTrue(collection_exists("to-delete-unit"))
+
+            result = delete_collection("to-delete-unit")
+            self.assertTrue(result)
+            self.assertFalse(collection_exists("to-delete-unit"))
+
+        shutil.rmtree(temp_dir)
 
 
 if __name__ == '__main__':
